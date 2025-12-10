@@ -46,7 +46,7 @@
 
   <img width="321" height="265" alt="image" src="https://github.com/user-attachments/assets/c7d3b826-b443-4b53-bc48-1297f8349901" />
 
-- Выбрать скачанный json файл из [releases] и согласиться с изменениями
+- Выбрать скачанный json файл из [релизов](https://github.com/JeanP00l/meterScripts/releases) и согласиться с изменениями
 
 Готово.
 
