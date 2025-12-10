@@ -177,6 +177,27 @@
       `;
     });
 
+    // Добавляем кнопку проверки обновлений внизу
+    html += `
+      <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+          <span style="font-size: 11px; color: #666;">Версия: ${CURRENT_VERSION}</span>
+          <button id="check-updates-btn" style="
+            padding: 6px 12px;
+            background: #007acc;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: bold;
+            transition: background 0.2s ease;
+          ">Проверить обновления</button>
+        </div>
+        <div id="update-status" style="font-size: 10px; color: #666; min-height: 14px;"></div>
+      </div>
+    `;
+
     content.innerHTML = html;
 
     const toggleBtn = content.querySelector('#toggleCollapseUnified');
@@ -196,6 +217,53 @@
         }
       }
     });
+
+    // Инициализируем кнопку проверки обновлений
+    const checkUpdatesBtn = content.querySelector('#check-updates-btn');
+    const updateStatus = content.querySelector('#update-status');
+    if (checkUpdatesBtn) {
+      // Стили при наведении
+      checkUpdatesBtn.addEventListener('mouseenter', () => {
+        if (!checkUpdatesBtn.disabled) {
+          checkUpdatesBtn.style.background = '#005a9e';
+        }
+      });
+      
+      checkUpdatesBtn.addEventListener('mouseleave', () => {
+        if (!checkUpdatesBtn.disabled) {
+          checkUpdatesBtn.style.background = '#007acc';
+        }
+      });
+
+      checkUpdatesBtn.addEventListener('click', async () => {
+        checkUpdatesBtn.disabled = true;
+        checkUpdatesBtn.style.background = '#999';
+        checkUpdatesBtn.style.cursor = 'not-allowed';
+        checkUpdatesBtn.textContent = 'Проверка...';
+        updateStatus.textContent = '⏳ Проверка обновлений...';
+        
+        try {
+          const result = await checkVersionManual();
+          if (result) {
+            if (result.needsUpdate) {
+              updateStatus.innerHTML = `<span style="color: #f59e0b;">🔔 Доступна версия v${result.latestVersion}</span>`;
+              showUpdateNotification(result.latestVersion, result.downloadUrl, result.releaseUrl);
+            } else {
+              updateStatus.innerHTML = `<span style="color: #10b981;">✅ У вас актуальная версия (v${result.latestVersion})</span>`;
+            }
+          } else {
+            updateStatus.innerHTML = `<span style="color: #ef4444;">❌ Ошибка при проверке</span>`;
+          }
+        } catch (error) {
+          updateStatus.innerHTML = `<span style="color: #ef4444;">❌ Ошибка: ${error.message}</span>`;
+        } finally {
+          checkUpdatesBtn.disabled = false;
+          checkUpdatesBtn.style.background = '#007acc';
+          checkUpdatesBtn.style.cursor = 'pointer';
+          checkUpdatesBtn.textContent = 'Проверить обновления';
+        }
+      });
+    }
   }
 
   function toggleSection(id) {
@@ -211,6 +279,285 @@
         arrow.textContent = '▶';
       }
     }
+  }
+
+  // ===== Проверка версии =====
+  const CURRENT_VERSION = '0.10.2';
+  const VERSION_CHECK_KEY = 'meter_scripts_version_check';
+  const VERSION_STORAGE_KEY = 'meter_scripts_version';
+  const GITHUB_REPO = 'JeanP00l/meterScripts';
+  const CACHE_DURATION = 60 * 60 * 1000; // 1 час в миллисекундах
+  const EXTENSION_ID = 'nbhcbdghjpllgmfilhnhkllmkecfmpld';
+
+  // Сохраняем текущую версию при первой загрузке
+  const storedVersion = localStorage.getItem(VERSION_STORAGE_KEY);
+  if (!storedVersion || storedVersion !== CURRENT_VERSION) {
+    localStorage.setItem(VERSION_STORAGE_KEY, CURRENT_VERSION);
+  }
+
+  // Функция сравнения версий (формат: "0.10.2")
+  function compareVersions(current, latest) {
+    const currentParts = current.split('.').map(Number);
+    const latestParts = latest.split('.').map(Number);
+    
+    for (let i = 0; i < Math.max(currentParts.length, latestParts.length); i++) {
+      const currentPart = currentParts[i] || 0;
+      const latestPart = latestParts[i] || 0;
+      
+      if (latestPart > currentPart) return -1; // Нужно обновление
+      if (latestPart < currentPart) return 1;  // Текущая новее (не должно быть)
+    }
+    
+    return 0; // Версии равны
+  }
+
+  // Функция нормализации версии (убирает префикс "v" если есть)
+  function normalizeVersion(tagName) {
+    return tagName.replace(/^v/i, '');
+  }
+
+  // Проверка версии с кешированием (автоматическая)
+  async function checkVersion() {
+    try {
+      // Проверяем кеш
+      const cached = localStorage.getItem(VERSION_CHECK_KEY);
+      if (cached) {
+        const cacheData = JSON.parse(cached);
+        const now = Date.now();
+        
+        // Если кеш еще актуален, используем его
+        if (cacheData.timestamp && (now - cacheData.timestamp) < CACHE_DURATION) {
+          if (cacheData.needsUpdate) {
+            showUpdateNotification(cacheData.latestVersion, cacheData.downloadUrl, cacheData.releaseUrl || cacheData.downloadUrl);
+          }
+          return null;
+        }
+      }
+
+      return await checkVersionManual();
+    } catch (error) {
+      console.warn('Ошибка при проверке обновлений:', error);
+      return null;
+    }
+  }
+
+  // Принудительная проверка версии (для кнопки, игнорирует кеш)
+  async function checkVersionManual() {
+    try {
+      // Получаем последний релиз с GitHub
+      let response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`);
+      
+      // Если последнего релиза нет (404), получаем список всех релизов и берем первый
+      if (!response.ok && response.status === 404) {
+        response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases`);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        const releases = await response.json();
+        if (!releases || releases.length === 0) {
+          throw new Error('Нет доступных релизов');
+        }
+        // Берем первый релиз из списка (самый свежий)
+        const release = releases[0];
+        const latestVersion = normalizeVersion(release.tag_name);
+        
+        return processReleaseData(release, latestVersion);
+      }
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const release = await response.json();
+      const latestVersion = normalizeVersion(release.tag_name);
+      
+      return processReleaseData(release, latestVersion);
+    } catch (error) {
+      console.warn('Ошибка при проверке обновлений:', error);
+      throw error;
+    }
+  }
+
+  // Обработка данных релиза
+  function processReleaseData(release, latestVersion) {
+    // Ищем JSON файл в assets
+    let jsonUrl = null;
+    if (release.assets && release.assets.length > 0) {
+      // Ищем файл, содержащий "json" и "скрипт" или "script"
+      const jsonAsset = release.assets.find(asset => 
+        asset.name.toLowerCase().includes('.json') && 
+        (asset.name.toLowerCase().includes('скрипт') || 
+         asset.name.toLowerCase().includes('script') ||
+         asset.name.toLowerCase().includes('meter'))
+      );
+      if (jsonAsset) {
+        jsonUrl = jsonAsset.browser_download_url;
+      }
+    }
+
+    // Если не нашли в assets, используем страницу релиза как fallback
+    // Пользователь сможет скачать файл вручную
+    if (!jsonUrl) {
+      jsonUrl = release.html_url;
+    }
+
+    // Сравниваем версии
+    const comparison = compareVersions(CURRENT_VERSION, latestVersion);
+    const needsUpdate = comparison < 0;
+
+    const releaseUrl = release.html_url;
+    
+    const result = {
+      latestVersion,
+      needsUpdate,
+      downloadUrl: jsonUrl || releaseUrl,
+      releaseUrl: releaseUrl
+    };
+
+    // Сохраняем в кеш
+    localStorage.setItem(VERSION_CHECK_KEY, JSON.stringify({
+      timestamp: Date.now(),
+      ...result
+    }));
+
+    // Показываем уведомление, если нужно обновление
+    if (needsUpdate) {
+      showUpdateNotification(latestVersion, jsonUrl || releaseUrl, releaseUrl);
+    }
+
+    return result;
+  }
+
+  // Функция показа уведомления об обновлении
+  function showUpdateNotification(latestVersion, downloadUrl, releaseUrl) {
+    // Если releaseUrl не передан, используем downloadUrl (обратная совместимость)
+    if (!releaseUrl) {
+      releaseUrl = downloadUrl.includes('/releases/tag/') ? downloadUrl : `https://github.com/${GITHUB_REPO}/releases/latest`;
+    }
+    // Удаляем старое уведомление, если есть
+    const existing = document.getElementById('meter-scripts-update-notification');
+    if (existing) {
+      existing.remove();
+    }
+
+    const notification = document.createElement('div');
+    notification.id = 'meter-scripts-update-notification';
+    notification.style.cssText = `
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      font-family: sans-serif;
+      font-size: 12px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      z-index: 1000000;
+      max-width: 200px;
+      cursor: pointer;
+      opacity: 0;
+      transform: translateY(-10px);
+      transition: opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease;
+    `;
+
+    notification.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 16px;">🔔</span>
+        <div style="flex: 1;">
+          <div style="font-weight: bold; margin-bottom: 4px;">Обновление доступно</div>
+          <div style="font-size: 11px; opacity: 0.9;">v${latestVersion}</div>
+        </div>
+        <button id="update-download-btn" style="
+          background: rgba(255,255,255,0.2);
+          border: 1px solid rgba(255,255,255,0.3);
+          color: white;
+          padding: 4px 8px;
+          border-radius: 4px;
+          cursor: pointer;
+          font-size: 11px;
+          font-weight: bold;
+        ">Скачать</button>
+      </div>
+      <div id="update-close-btn" style="
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        opacity: 0.8;
+        width: 16px;
+        height: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      ">×</div>
+    `;
+
+    // Анимация при наведении
+    notification.addEventListener('mouseenter', () => {
+      notification.style.transform = 'translateY(-2px)';
+      notification.style.boxShadow = '0 6px 16px rgba(0,0,0,0.4)';
+    });
+
+    notification.addEventListener('mouseleave', () => {
+      notification.style.transform = 'translateY(0)';
+      notification.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
+    });
+
+    // Обработчик кнопки закрытия
+    const closeBtn = notification.querySelector('#update-close-btn');
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      notification.style.opacity = '0';
+      notification.style.transform = 'translateY(-10px)';
+      setTimeout(() => notification.remove(), 300);
+    });
+
+    // Обработчик кнопки скачивания
+    const downloadBtn = notification.querySelector('#update-download-btn');
+    downloadBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      
+      try {
+        // Всегда открываем страницу релиза на GitHub
+        window.open(releaseUrl, '_blank');
+        
+        // Если это прямая ссылка на JSON файл, скачиваем его
+        if (downloadUrl.endsWith('.json') || downloadUrl.includes('/download/')) {
+          // Скачиваем JSON файл
+          const link = document.createElement('a');
+          link.href = downloadUrl;
+          link.download = `скрипты-${latestVersion}.json`;
+          link.target = '_blank';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        }
+      } catch (error) {
+        console.error('Ошибка при скачивании обновления:', error);
+        // Если не удалось, открываем страницу релиза
+        window.open(releaseUrl, '_blank');
+      }
+    });
+
+    document.body.appendChild(notification);
+
+    // Анимация появления
+    setTimeout(() => {
+      notification.style.opacity = '1';
+      notification.style.transform = 'translateY(0)';
+    }, 10);
+  }
+
+  // Запускаем проверку версии при загрузке страницы
+  if (document.body) {
+    // Небольшая задержка, чтобы не блокировать загрузку страницы
+    setTimeout(checkVersion, 2000);
+  } else {
+    document.addEventListener('DOMContentLoaded', () => {
+      setTimeout(checkVersion, 2000);
+    });
   }
 
   // Экспортируем менеджер в window
