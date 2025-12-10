@@ -20,6 +20,38 @@
 - Google Chrome (рекомендуется для Web Speech API)
 - Доступ к сайту meter.printecs.com
 
+## Установка
+- Установить [User JavaScript and CSS](https://chromewebstore.google.com/detail/user-javascript-and-css/nbhcbdghjpllgmfilhnhkllmkecfmpld)
+- Зайти в настройку расширений
+- 
+  <img width="331" height="576" alt="extensionJS" src="https://github.com/user-attachments/assets/cee2a36a-67d3-4751-acca-f8adccf03f97" />
+
+- Найти User JavaScript and CSS и зайти в "Сведения"
+
+  <img width="405" height="211" alt="image" src="https://github.com/user-attachments/assets/92fd594f-3207-4b7c-8055-92de7d178074" />
+
+- Включить "Разрешить пользовательские скрипты"
+
+  <img width="678" height="336" alt="image" src="https://github.com/user-attachments/assets/929312d6-a770-4d65-8748-5dac5c560e1c" />
+
+- Перейти в "Параметры расширений"
+
+  <img width="683" height="212" alt="image" src="https://github.com/user-attachments/assets/d34b7cbd-160e-4ab9-9ec4-693c77b86805" />
+
+- Нажать на кнопку настройки слева
+
+  <img width="275" height="217" alt="image" src="https://github.com/user-attachments/assets/d8417696-1d62-44a6-9589-f05ce1804955" />
+
+- Выбрать "Загрузить JSON"
+
+  <img width="321" height="265" alt="image" src="https://github.com/user-attachments/assets/c7d3b826-b443-4b53-bc48-1297f8349901" />
+
+- Выбрать скачанный json файл из [releases] и согласиться с изменениями
+
+Готово.
+
+
+
 ## Скрипты
 
 ### 1. Менеджер общей панели настроек
