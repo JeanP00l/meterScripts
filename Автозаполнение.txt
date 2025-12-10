@@ -9,6 +9,7 @@
 	let place = saved.place ?? 1;
 	let hotkey = saved.hotkey ?? '/';
 	let SledORPred = saved.SledORPred ?? 1;
+	let sealNumberTemplate = saved.sealNumberTemplate ?? '';
 	
 	// Шаблоны антимагнитной пломбы
 	let antimagneticTemplates = JSON.parse(localStorage.getItem(antimagneticTemplatesKey) || '[]');
@@ -69,6 +70,16 @@
 				</div>
 			</div>
 			<div style="margin-top:12px; padding-top:12px; border-top:1px solid #ddd;">
+				<label style="display:block; margin-bottom:6px;">
+					<strong style="font-size:12px;">Шаблон номера пломбы:</strong><br>
+					<input type="text" id="sealNumberTemplateInput" value="${sealNumberTemplate}" 
+						maxlength="5" pattern="[0-9]*" inputmode="numeric"
+						placeholder="Например: 564" 
+						style="width:100%; padding:3px; margin-top:2px; box-sizing:border-box;">
+					<small style="font-size:10px; color:#666;">Максимум 5 цифр</small>
+				</label>
+			</div>
+			<div style="margin-top:12px; padding-top:12px; border-top:1px solid #ddd;">
 				<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
 					<strong style="font-size:12px;">Шаблоны антимагнитной пломбы:</strong>
 					<button id="manageTemplatesBtn" style="padding:2px 6px; font-size:11px; cursor:pointer;">Управление</button>
@@ -89,9 +100,11 @@
 				const setHotkeyBtn = container.querySelector('#setHotkeyBtnAuto');
 				const manageTemplatesBtn = container.querySelector('#manageTemplatesBtn');
 				const templatesPreview = container.querySelector('#templatesPreview');
+				const sealNumberTemplateInput = container.querySelector('#sealNumberTemplateInput');
 
 				placeSelect.value = String(place);
 				SledORPredSelect.value = String(SledORPred);
+				sealNumberTemplateInput.value = sealNumberTemplate;
 
 				function updateTemplatesPreview() {
 					if (antimagneticTemplates.length > 0) {
@@ -105,7 +118,7 @@
 				function saveAndReload() {
 					localStorage.setItem(
 						configKey,
-						JSON.stringify({ place, hotkey, SledORPred })
+						JSON.stringify({ place, hotkey, SledORPred, sealNumberTemplate })
 					);
 					localStorage.setItem(antimagneticTemplatesKey, JSON.stringify(antimagneticTemplates));
 					location.reload();
@@ -124,6 +137,34 @@
 				SledORPredSelect.addEventListener('change', () => {
 					SledORPred = Number(SledORPredSelect.value);
 					saveAndReload();
+				});
+
+				// Обработчик для шаблона номера пломбы
+				sealNumberTemplateInput.addEventListener('input', (e) => {
+					// Разрешаем только цифры
+					const value = e.target.value.replace(/\D/g, '');
+					// Ограничиваем до 5 цифр
+					const limitedValue = value.slice(0, 5);
+					if (value !== limitedValue) {
+						e.target.value = limitedValue;
+					}
+					sealNumberTemplate = limitedValue;
+					// Сохраняем без перезагрузки
+					localStorage.setItem(
+						configKey,
+						JSON.stringify({ place, hotkey, SledORPred, sealNumberTemplate })
+					);
+				});
+				
+				sealNumberTemplateInput.addEventListener('blur', () => {
+					// При потере фокуса сохраняем финальное значение
+					const value = sealNumberTemplateInput.value.replace(/\D/g, '').slice(0, 5);
+					sealNumberTemplateInput.value = value;
+					sealNumberTemplate = value;
+					localStorage.setItem(
+						configKey,
+						JSON.stringify({ place, hotkey, SledORPred, sealNumberTemplate })
+					);
 				});
 
 				// ===== Назначение горячей клавиши =====
@@ -1461,6 +1502,103 @@
 		datalist.innerHTML = antimagneticTemplates.map(t => `<option value="${t}">`).join('');
 	})();
 
+	// ===== Функция заполнения шаблоном номера пломбы =====
+	async function fillSealNumberTemplate() {
+		// Проверяем, что шаблон задан
+		if (!sealNumberTemplate || sealNumberTemplate.trim() === '') {
+			return;
+		}
+
+		// Проверяем, что нет активного workflow (нет сохраненного номера для следующей записи)
+		const workflowNextSeal = localStorage.getItem('workflow_next_seal');
+		if (workflowNextSeal) {
+			// Workflow активен, не заполняем шаблоном
+			return;
+		}
+
+		// Проверяем флаг активного workflow
+		if (window._workflowActive) {
+			return;
+		}
+
+		// Ищем поле номера пломбы
+		const sealInput = document.querySelector('input#seal_number_terminal_cover');
+		if (!sealInput) {
+			return;
+		}
+
+		// Проверяем, что поле видимо
+		if (sealInput.offsetParent === null) {
+			return;
+		}
+
+		// Проверяем, что поле пустое
+		const currentValue = sealInput.value.trim();
+		if (currentValue !== '') {
+			// Поле уже заполнено, не перезаписываем
+			return;
+		}
+
+		// Заполняем поле шаблоном (используем silent режим, чтобы не триггерить другие обработчики)
+		const success = await setReactInputValue('input#seal_number_terminal_cover', sealNumberTemplate, 3, true);
+		
+		// Если успешно заполнили, сохраняем значение в data-атрибут для отслеживания
+		if (success) {
+			sealInput.dataset.templateValue = sealNumberTemplate;
+		}
+	}
+
+	// Функция для отслеживания изменений в поле номера пломбы пользователем
+	function setupSealInputWatcher() {
+		const sealInput = document.querySelector('input#seal_number_terminal_cover');
+		if (!sealInput || sealInput.dataset.watcherSetup) {
+			return;
+		}
+
+		// Помечаем, что watcher уже установлен
+		sealInput.dataset.watcherSetup = 'true';
+
+		// Сохраняем последнее известное значение для отслеживания изменений
+		let lastKnownValue = sealInput.value || '';
+
+		// Отслеживаем изменения значения пользователем
+		sealInput.addEventListener('input', (e) => {
+			const currentValue = sealInput.value || '';
+			
+			// Если пользователь вручную изменил значение (не программное событие)
+			if (e.isTrusted && !e._programmatic) {
+				// Если значение изменилось (не просто фокус/блур)
+				if (currentValue !== lastKnownValue) {
+					// Пользователь вручную изменил значение - сбрасываем флаги
+					delete sealInput.dataset.templateFilled;
+					delete sealInput.dataset.templateValue;
+				}
+			}
+			
+			lastKnownValue = currentValue;
+		});
+
+		// Также отслеживаем изменения через MutationObserver для случаев, когда значение меняется программно
+		const valueObserver = new MutationObserver(() => {
+			const currentValue = sealInput.value || '';
+			// Если значение изменилось и не соответствует шаблону, значит это не наш шаблон
+			if (currentValue !== lastKnownValue && currentValue !== sealInput.dataset.templateValue) {
+				// Значение изменилось не из-за нашего шаблона - сбрасываем флаги
+				delete sealInput.dataset.templateFilled;
+				delete sealInput.dataset.templateValue;
+			}
+			lastKnownValue = currentValue;
+		});
+
+		// Наблюдаем за изменениями атрибута value
+		valueObserver.observe(sealInput, {
+			attributes: true,
+			attributeFilter: ['value'],
+			childList: false,
+			subtree: false
+		});
+	}
+
 	// ===== Наблюдатель =====
 	const observer = new MutationObserver(() => {
 		// Ищем поле даты по новому селектору
@@ -1474,6 +1612,30 @@
 				antimagneticInput.setAttribute('list', 'antimagnetic_datalist');
 			}
 			createAntimagneticBlock();
+		}
+
+		// Проверяем поле номера пломбы для заполнения шаблоном
+		const sealInput = document.querySelector('input#seal_number_terminal_cover');
+		if (sealInput) {
+			// Устанавливаем watcher для отслеживания изменений пользователем
+			setupSealInputWatcher();
+			
+			// Проверяем текущее значение поля
+			const currentValue = sealInput.value.trim();
+			
+			// Если поле пустое и мы еще не заполняли его шаблоном для этого значения
+			if (currentValue === '' && !sealInput.dataset.templateFilled) {
+				// Помечаем, что мы обработали это поле
+				sealInput.dataset.templateFilled = 'true';
+				// Заполняем шаблоном с небольшой задержкой
+				setTimeout(() => {
+					fillSealNumberTemplate();
+				}, 300);
+			} else if (currentValue !== '' && currentValue !== sealInput.dataset.templateValue) {
+				// Поле заполнено другим значением (не нашим шаблоном) - сбрасываем флаг
+				// чтобы при следующем появлении пустого поля можно было заполнить шаблоном
+				delete sealInput.dataset.templateFilled;
+			}
 		}
 	});
 	observer.observe(document.body, { childList: true, subtree: true });
@@ -1491,9 +1653,24 @@
 		createAntimagneticBlock();
 	}
 
+	// Проверяем поле номера пломбы при загрузке для заполнения шаблоном
+	const initialSealInput = document.querySelector('input#seal_number_terminal_cover');
+	if (initialSealInput) {
+		setupSealInputWatcher();
+		if (!initialSealInput.dataset.templateFilled) {
+			initialSealInput.dataset.templateFilled = 'true';
+			setTimeout(() => {
+				fillSealNumberTemplate();
+			}, 500);
+		}
+	}
+
 	// ===== Workflow =====
 	async function runWorkflow() {
 		try {
+			// Устанавливаем флаг активного workflow, чтобы не заполнять шаблоном
+			window._workflowActive = true;
+
 			// 1. Проверка поля пломбы
 			const sealInput = document.querySelector('input#seal_number_terminal_cover');
 			let savedSeal = null;
@@ -1562,6 +1739,8 @@
 				// Проверяем, существует ли поле перед попыткой вставки
 				const sealInputField = await waitForSelector('input#seal_number_terminal_cover', 5000);
 				if (sealInputField) {
+					// Сбрасываем флаг templateFilled, чтобы можно было заполнить инкрементированным значением
+					delete sealInputField.dataset.templateFilled;
 					const success = await setReactInputValue('input#seal_number_terminal_cover', sealToInsert, 3, false);
 					if (!success) {
 						showToast('⚠️ Не удалось установить номер пломбы', 2000, '#a33');
@@ -1588,6 +1767,11 @@
 			showToast(`❌ Ошибка: ${err.message}`, 4000, '#a33');
 			console.error('❌ Ошибка workflow:', err);
 			throw err;
+		} finally {
+			// Снимаем флаг активного workflow после небольшой задержки
+			setTimeout(() => {
+				window._workflowActive = false;
+			}, 1000);
 		}
 	}
 

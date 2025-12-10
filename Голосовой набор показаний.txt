@@ -2078,9 +2078,26 @@
 
           const sealText = sealMatch[1].trim();
           
-          // Извлекаем число из текста (цифры)
-          const digits = sealText.replace(/\D/g, '');
-          if (!digits) {
+          // Нормализуем число: сначала пробуем извлечь цифры
+          let newDigits = sealText.replace(/\D/g, '');
+          
+          // Если цифр нет, пробуем распознать словесный вариант (для однозначных чисел)
+          if (!newDigits) {
+            const normalizedText = sealText.toLowerCase().trim();
+            
+            // Проверяем в словаре russianNumbers (0-9)
+            if (russianNumbers[normalizedText] !== undefined) {
+              newDigits = russianNumbers[normalizedText].toString();
+            } else {
+              // Убираем окончания порядковых числительных и пробуем снова
+              const normalizedWithoutEnding = normalizedText.replace(/(ый|ой|ий)$/i, '').trim();
+              if (normalizedWithoutEnding && russianNumbers[normalizedWithoutEnding] !== undefined) {
+                newDigits = russianNumbers[normalizedWithoutEnding].toString();
+              }
+            }
+          }
+          
+          if (!newDigits) {
             showToast('❌ Не распознано число для пломбы', 3000, '#a33');
             return;
           }
@@ -2092,20 +2109,46 @@
             return;
           }
 
-          // Получаем текущее значение
-          const currentValue = sealInput.value || '';
-
-          // Добавляем число в конец
-          const newValue = currentValue + digits;
+          // Получаем текущее значение (может быть заполнено шаблоном)
+          const currentValue = (sealInput.value || '').replace(/\D/g, ''); // Оставляем только цифры
+          
+          // Вычисляем новое значение с учетом ограничения в 5 цифр
+          // Если новое число однозначное, дополняем его нулем до двухзначного формата
+          let normalizedNewDigits = newDigits;
+          if (newDigits.length === 1) {
+            normalizedNewDigits = '0' + newDigits;
+          }
+          
+          const currentLength = currentValue.length;
+          const newLength = normalizedNewDigits.length;
+          const totalLength = currentLength + newLength;
+          
+          let finalValue;
+          
+          if (totalLength <= 5) {
+            // Дополняем: просто добавляем новое число в конец
+            finalValue = currentValue + normalizedNewDigits;
+          } else {
+            // Заменяем: если сумма превышает 5 цифр, заменяем последние цифры текущего значения
+            // Вычисляем, сколько цифр нужно заменить
+            const replaceCount = totalLength - 5;
+            // Оставляем из текущего значения только те цифры, которые не будут заменены
+            const keepFromCurrent = Math.max(0, currentLength - replaceCount);
+            finalValue = currentValue.slice(0, keepFromCurrent) + normalizedNewDigits;
+            
+            // Ограничиваем до 5 цифр (на случай, если новое число слишком длинное)
+            finalValue = finalValue.slice(0, 5);
+          }
 
           // Устанавливаем новое значение
-          const success = await setReactInputValue('input#seal_number_terminal_cover', newValue);
+          const success = await setReactInputValue('input#seal_number_terminal_cover', finalValue);
           if (!success) {
             showToast('❌ Не удалось установить номер пломбы', 3000, '#a33');
             return;
           }
 
-          showToast(`✅ Добавлено к номеру пломбы: ${digits}`, 3000, '#2a7');
+          // Показываем toast с полным номером пломбы
+          showToast(`✅ Номер пломбы: ${finalValue}`, 3000, '#2a7');
           return;
         }
         

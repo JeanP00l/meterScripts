@@ -282,7 +282,7 @@
   }
 
   // ===== Проверка версии =====
-  const CURRENT_VERSION = '0.10.2';
+  const CURRENT_VERSION = '0.10.3';
   const VERSION_CHECK_KEY = 'meter_scripts_version_check';
   const VERSION_STORAGE_KEY = 'meter_scripts_version';
   const GITHUB_REPO = 'JeanP00l/meterScripts';
