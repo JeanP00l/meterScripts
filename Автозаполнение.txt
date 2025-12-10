@@ -921,15 +921,24 @@
 			return false;
 		}
 		
-		// Вычисляем дату следующей поверки (+16 лет)
+		// Вычисляем дату следующей поверки (+16 лет, но на день раньше)
 		const dateParts = lastInspectionDate.split('-');
 		if (dateParts.length !== 3) {
 			return false;
 		}
 		
-		const currentYear = parseInt(dateParts[0], 10);
-		const newYear = currentYear + 16;
-		const nextInspectionDate = `${newYear}-${dateParts[1]}-${dateParts[2]}`;
+		// Создаем объект Date из исходной даты
+		const lastDate = new Date(lastInspectionDate + 'T12:00:00');
+		// Добавляем 16 лет
+		lastDate.setFullYear(lastDate.getFullYear() + 16);
+		// Вычитаем один день
+		lastDate.setDate(lastDate.getDate() - 1);
+		
+		// Форматируем в YYYY-MM-DD
+		const year = lastDate.getFullYear();
+		const month = String(lastDate.getMonth() + 1).padStart(2, '0');
+		const day = String(lastDate.getDate()).padStart(2, '0');
+		const nextInspectionDate = `${year}-${month}-${day}`;
 		
 		// Находим поле "Дата следующей поверки"
 		const nextInspectionInput = findNextInspectionInput();
