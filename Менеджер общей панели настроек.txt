@@ -316,24 +316,11 @@
     return tagName.replace(/^v/i, '');
   }
 
-  // Проверка версии с кешированием (автоматическая)
+  // Проверка версии (автоматическая при загрузке страницы)
+  // Всегда выполняет проверку, игнорируя кеш, чтобы пользователь всегда видел актуальную информацию
   async function checkVersion() {
     try {
-      // Проверяем кеш
-      const cached = localStorage.getItem(VERSION_CHECK_KEY);
-      if (cached) {
-        const cacheData = JSON.parse(cached);
-        const now = Date.now();
-        
-        // Если кеш еще актуален, используем его
-        if (cacheData.timestamp && (now - cacheData.timestamp) < CACHE_DURATION) {
-          if (cacheData.needsUpdate) {
-            showUpdateNotification(cacheData.latestVersion, cacheData.downloadUrl, cacheData.releaseUrl || cacheData.downloadUrl);
-          }
-          return null;
-        }
-      }
-
+      // Всегда выполняем проверку при загрузке страницы, игнорируя кеш
       return await checkVersionManual();
     } catch (error) {
       console.warn('Ошибка при проверке обновлений:', error);
