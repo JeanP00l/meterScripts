@@ -1,0 +1,223 @@
+// Менеджер общей панели настроек
+(() => {
+  'use strict';
+
+  // ===== Настройки =====
+  const positionKey = 'unified_panel_position';
+  let panel = null;
+  let content = null;
+  let collapsed = null;
+  const sections = [];
+
+  function initPanel() {
+    if (panel) return;
+
+    panel = document.createElement('div');
+    panel.style.cssText = `
+      position: fixed;
+      top: 10px;
+      right: 250px;
+      background: rgba(255,255,255,0.95);
+      color: #000;
+      font-family: sans-serif;
+      font-size: 13px;
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 10px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+      z-index: 999999;
+      width: 280px;
+      max-height: 90vh;
+      overflow-y: auto;
+      transition: all 0.3s ease;
+    `;
+    document.body.appendChild(panel);
+
+    const savedPosition = JSON.parse(localStorage.getItem(positionKey) || '{}');
+    if (savedPosition.left && savedPosition.top) {
+      panel.style.left = savedPosition.left;
+      panel.style.top = savedPosition.top;
+      panel.style.right = '';
+    } else {
+      const rect = panel.getBoundingClientRect();
+      panel.style.left = `${rect.left}px`;
+      panel.style.right = '';
+    }
+
+    collapsed = document.createElement('div');
+    collapsed.style.cssText = `
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      font-weight: bold;
+      padding: 5px 0;
+    `;
+    collapsed.innerHTML = `
+      <span class="drag-handle" style="cursor: move; margin-right: 5px; font-size: 14px;">↔↕</span>
+      Настройки скриптов
+      <span style="font-size:14px; cursor:pointer;">⚙️</span>
+    `;
+    panel.appendChild(collapsed);
+
+    content = document.createElement('div');
+    content.style.display = 'none';
+    panel.appendChild(content);
+
+    collapsed.querySelector('span:last-child').addEventListener('click', () => {
+      content.style.display = content.style.display === 'none' ? 'block' : 'none';
+    });
+
+    let isDragging = false;
+    let dragOffsetX = 0;
+    let dragOffsetY = 0;
+    const dragHandle = collapsed.querySelector('.drag-handle');
+
+    dragHandle.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      const rect = panel.getBoundingClientRect();
+      
+      // Вычисляем смещение курсора относительно левого верхнего угла панели
+      dragOffsetX = e.clientX - rect.left;
+      dragOffsetY = e.clientY - rect.top;
+      
+      // Предотвращаем выделение текста и другие действия
+      e.preventDefault();
+      e.stopPropagation();
+      
+      // Добавляем стили для предотвращения выделения
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = 'move';
+      panel.style.pointerEvents = 'none';
+      
+      // Используем capture phase для более быстрой обработки
+      document.addEventListener('mousemove', onMouseMove, true);
+      document.addEventListener('mouseup', onMouseUp, true);
+    });
+
+    function onMouseMove(e) {
+      if (!isDragging) return;
+      e.preventDefault();
+      e.stopPropagation();
+      
+      // Вычисляем новую позицию напрямую от курсора - жесткое следование
+      let newLeft = e.clientX - dragOffsetX;
+      let newTop = e.clientY - dragOffsetY;
+      
+      // Получаем размеры панели
+      const panelWidth = panel.offsetWidth;
+      const panelHeight = panel.offsetHeight;
+      
+      // Ограничиваем перемещение границами окна - панель упирается краями
+      // Левый край не может быть меньше 0
+      if (newLeft < 0) newLeft = 0;
+      // Правый край не может быть больше ширины окна
+      if (newLeft + panelWidth > window.innerWidth) newLeft = window.innerWidth - panelWidth;
+      // Верхний край не может быть меньше 0
+      if (newTop < 0) newTop = 0;
+      // Нижний край не может быть больше высоты окна
+      if (newTop + panelHeight > window.innerHeight) newTop = window.innerHeight - panelHeight;
+      
+      // Применяем позицию напрямую, без transform - жесткое следование без инерции
+      panel.style.left = `${newLeft}px`;
+      panel.style.top = `${newTop}px`;
+      panel.style.right = 'auto';
+      panel.style.margin = '0';
+      panel.style.transform = 'none';
+    }
+
+    function onMouseUp(e) {
+      if (!isDragging) return;
+      isDragging = false;
+      
+      // Восстанавливаем нормальное поведение
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      panel.style.pointerEvents = '';
+      
+      document.removeEventListener('mousemove', onMouseMove, true);
+      document.removeEventListener('mouseup', onMouseUp, true);
+      
+      // Сохраняем позицию
+      localStorage.setItem(positionKey, JSON.stringify({
+        left: panel.style.left,
+        top: panel.style.top
+      }));
+    }
+  }
+
+  function registerSection(id, title, htmlContent, callbacks) {
+    initPanel();
+    sections.push({ id, title, htmlContent, callbacks });
+    renderSections();
+  }
+
+  function renderSections() {
+    if (!content) return;
+
+    let html = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <span style="font-weight:bold;">Настройки скриптов</span>
+        <span id="toggleCollapseUnified" style="cursor:pointer; font-size:14px;">🙈</span>
+      </div>
+    `;
+
+    sections.forEach((section, index) => {
+      // Все секции свернуты по умолчанию
+      html += `
+        <div class="section-${section.id}" style="margin-bottom:${index < sections.length - 1 ? '10px' : '0'}; border: 1px solid #ddd; border-radius: 5px; overflow: hidden;">
+          <div class="section-header-${section.id}" style="background: #f5f5f5; padding: 8px; cursor: pointer; font-weight: bold; display: flex; justify-content: space-between; align-items: center;" onclick="window.meterScriptsPanelManager.toggleSection('${section.id}')">
+            <span>${section.title}</span>
+            <span class="section-arrow-${section.id}">▶</span>
+          </div>
+          <div class="section-content-${section.id}" style="padding: 10px; display: none;">
+            ${section.htmlContent}
+          </div>
+        </div>
+      `;
+    });
+
+    content.innerHTML = html;
+
+    const toggleBtn = content.querySelector('#toggleCollapseUnified');
+    if (toggleBtn) {
+      toggleBtn.addEventListener('click', () => {
+        content.style.display = 'none';
+        collapsed.style.display = 'flex';
+      });
+    }
+
+    // Вызываем callbacks для инициализации элементов
+    sections.forEach(section => {
+      if (section.callbacks && section.callbacks.onRender) {
+        const sectionContainer = content.querySelector(`.section-content-${section.id}`);
+        if (sectionContainer) {
+          section.callbacks.onRender(sectionContainer);
+        }
+      }
+    });
+  }
+
+  function toggleSection(id) {
+    if (!content) return;
+    const sectionContent = content.querySelector(`.section-content-${id}`);
+    const arrow = content.querySelector(`.section-arrow-${id}`);
+    if (sectionContent && arrow) {
+      if (sectionContent.style.display === 'none') {
+        sectionContent.style.display = 'block';
+        arrow.textContent = '▼';
+      } else {
+        sectionContent.style.display = 'none';
+        arrow.textContent = '▶';
+      }
+    }
+  }
+
+  // Экспортируем менеджер в window
+  window.meterScriptsPanelManager = {
+    registerSection,
+    toggleSection
+  };
+
+})();
+
