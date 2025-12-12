@@ -1,0 +1,557 @@
+// Менеджер общей панели настроек
+(() => {
+  'use strict';
+
+  // ===== Настройки =====
+  const positionKey = 'unified_panel_position';
+  let panel = null;
+  let content = null;
+  let collapsed = null;
+  const sections = [];
+
+  function initPanel() {
+    if (panel) return;
+
+    panel = document.createElement('div');
+    panel.style.cssText = `
+      position: fixed;
+      top: 10px;
+      right: 250px;
+      background: rgba(255,255,255,0.95);
+      color: #000;
+      font-family: sans-serif;
+      font-size: 13px;
+      padding: 10px;
+      border: 1px solid #ccc;
+      border-radius: 10px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+      z-index: 999999;
+      width: 280px;
+      max-height: 90vh;
+      overflow-y: auto;
+      transition: all 0.3s ease;
+    `;
+    document.body.appendChild(panel);
+
+    const savedPosition = JSON.parse(localStorage.getItem(positionKey) || '{}');
+    if (savedPosition.left && savedPosition.top) {
+      panel.style.left = savedPosition.left;
+      panel.style.top = savedPosition.top;
+      panel.style.right = '';
+    } else {
+      const rect = panel.getBoundingClientRect();
+      panel.style.left = `${rect.left}px`;
+      panel.style.right = '';
+    }
+
+    collapsed = document.createElement('div');
+    collapsed.style.cssText = `
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      font-weight: bold;
+      padding: 5px 0;
+    `;
+    collapsed.innerHTML = `
+      <span class="drag-handle" style="cursor: move; margin-right: 5px; font-size: 14px;">↔↕</span>
+      Настройки скриптов
+      <span style="font-size:14px; cursor:pointer;">⚙️</span>
+    `;
+    panel.appendChild(collapsed);
+
+    content = document.createElement('div');
+    content.style.display = 'none';
+    panel.appendChild(content);
+
+    collapsed.querySelector('span:last-child').addEventListener('click', () => {
+      content.style.display = content.style.display === 'none' ? 'block' : 'none';
+    });
+
+    let isDragging = false;
+    let dragOffsetX = 0;
+    let dragOffsetY = 0;
+    const dragHandle = collapsed.querySelector('.drag-handle');
+
+    dragHandle.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      const rect = panel.getBoundingClientRect();
+      
+      // Вычисляем смещение курсора относительно левого верхнего угла панели
+      dragOffsetX = e.clientX - rect.left;
+      dragOffsetY = e.clientY - rect.top;
+      
+      // Предотвращаем выделение текста и другие действия
+      e.preventDefault();
+      e.stopPropagation();
+      
+      // Добавляем стили для предотвращения выделения
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = 'move';
+      panel.style.pointerEvents = 'none';
+      
+      // Используем capture phase для более быстрой обработки
+      document.addEventListener('mousemove', onMouseMove, true);
+      document.addEventListener('mouseup', onMouseUp, true);
+    });
+
+    function onMouseMove(e) {
+      if (!isDragging) return;
+      e.preventDefault();
+      e.stopPropagation();
+      
+      // Вычисляем новую позицию напрямую от курсора - жесткое следование
+      let newLeft = e.clientX - dragOffsetX;
+      let newTop = e.clientY - dragOffsetY;
+      
+      // Получаем размеры панели
+      const panelWidth = panel.offsetWidth;
+      const panelHeight = panel.offsetHeight;
+      
+      // Ограничиваем перемещение границами окна - панель упирается краями
+      // Левый край не может быть меньше 0
+      if (newLeft < 0) newLeft = 0;
+      // Правый край не может быть больше ширины окна
+      if (newLeft + panelWidth > window.innerWidth) newLeft = window.innerWidth - panelWidth;
+      // Верхний край не может быть меньше 0
+      if (newTop < 0) newTop = 0;
+      // Нижний край не может быть больше высоты окна
+      if (newTop + panelHeight > window.innerHeight) newTop = window.innerHeight - panelHeight;
+      
+      // Применяем позицию напрямую, без transform - жесткое следование без инерции
+      panel.style.left = `${newLeft}px`;
+      panel.style.top = `${newTop}px`;
+      panel.style.right = 'auto';
+      panel.style.margin = '0';
+      panel.style.transform = 'none';
+    }
+
+    function onMouseUp(e) {
+      if (!isDragging) return;
+      isDragging = false;
+      
+      // Восстанавливаем нормальное поведение
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      panel.style.pointerEvents = '';
+      
+      document.removeEventListener('mousemove', onMouseMove, true);
+      document.removeEventListener('mouseup', onMouseUp, true);
+      
+      // Сохраняем позицию
+      localStorage.setItem(positionKey, JSON.stringify({
+        left: panel.style.left,
+        top: panel.style.top
+      }));
+    }
+  }
+
+  function registerSection(id, title, htmlContent, callbacks) {
+    initPanel();
+    sections.push({ id, title, htmlContent, callbacks });
+    renderSections();
+  }
+
+  function renderSections() {
+    if (!content) return;
+
+    let html = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <span style="font-weight:bold;">Настройки скриптов</span>
+        <span id="toggleCollapseUnified" style="cursor:pointer; font-size:14px;">🙈</span>
+      </div>
+    `;
+
+    sections.forEach((section, index) => {
+      // Все секции свернуты по умолчанию
+      html += `
+        <div class="section-${section.id}" style="margin-bottom:${index < sections.length - 1 ? '10px' : '0'}; border: 1px solid #ddd; border-radius: 5px; overflow: hidden;">
+          <div class="section-header-${section.id}" style="background: #f5f5f5; padding: 8px; cursor: pointer; font-weight: bold; display: flex; justify-content: space-between; align-items: center;" onclick="window.meterScriptsPanelManager.toggleSection('${section.id}')">
+            <span>${section.title}</span>
+            <span class="section-arrow-${section.id}">▶</span>
+          </div>
+          <div class="section-content-${section.id}" style="padding: 10px; display: none;">
+            ${section.htmlContent}
+          </div>
+        </div>
+      `;
+    });
+
+    // Добавляем кнопку проверки обновлений внизу
+    html += `
+      <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+          <span style="font-size: 11px; color: #666;">Версия: ${CURRENT_VERSION}</span>
+          <button id="check-updates-btn" style="
+            padding: 6px 12px;
+            background: #007acc;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: bold;
+            transition: background 0.2s ease;
+          ">Проверить обновления</button>
+        </div>
+        <div id="update-status" style="font-size: 10px; color: #666; min-height: 14px;"></div>
+      </div>
+    `;
+
+    content.innerHTML = html;
+
+    const toggleBtn = content.querySelector('#toggleCollapseUnified');
+    if (toggleBtn) {
+      toggleBtn.addEventListener('click', () => {
+        content.style.display = 'none';
+        collapsed.style.display = 'flex';
+      });
+    }
+
+    // Вызываем callbacks для инициализации элементов
+    sections.forEach(section => {
+      if (section.callbacks && section.callbacks.onRender) {
+        const sectionContainer = content.querySelector(`.section-content-${section.id}`);
+        if (sectionContainer) {
+          section.callbacks.onRender(sectionContainer);
+        }
+      }
+    });
+
+    // Инициализируем кнопку проверки обновлений
+    const checkUpdatesBtn = content.querySelector('#check-updates-btn');
+    const updateStatus = content.querySelector('#update-status');
+    if (checkUpdatesBtn) {
+      // Стили при наведении
+      checkUpdatesBtn.addEventListener('mouseenter', () => {
+        if (!checkUpdatesBtn.disabled) {
+          checkUpdatesBtn.style.background = '#005a9e';
+        }
+      });
+      
+      checkUpdatesBtn.addEventListener('mouseleave', () => {
+        if (!checkUpdatesBtn.disabled) {
+          checkUpdatesBtn.style.background = '#007acc';
+        }
+      });
+
+      checkUpdatesBtn.addEventListener('click', async () => {
+        checkUpdatesBtn.disabled = true;
+        checkUpdatesBtn.style.background = '#999';
+        checkUpdatesBtn.style.cursor = 'not-allowed';
+        checkUpdatesBtn.textContent = 'Проверка...';
+        updateStatus.textContent = '⏳ Проверка обновлений...';
+        
+        try {
+          const result = await checkVersionManual();
+          if (result) {
+            if (result.needsUpdate) {
+              updateStatus.innerHTML = `<span style="color: #f59e0b;">🔔 Доступна версия v${result.latestVersion}</span>`;
+              showUpdateNotification(result.latestVersion, result.downloadUrl, result.releaseUrl);
+            } else {
+              updateStatus.innerHTML = `<span style="color: #10b981;">✅ У вас актуальная версия (v${result.latestVersion})</span>`;
+            }
+          } else {
+            updateStatus.innerHTML = `<span style="color: #ef4444;">❌ Ошибка при проверке</span>`;
+          }
+        } catch (error) {
+          updateStatus.innerHTML = `<span style="color: #ef4444;">❌ Ошибка: ${error.message}</span>`;
+        } finally {
+          checkUpdatesBtn.disabled = false;
+          checkUpdatesBtn.style.background = '#007acc';
+          checkUpdatesBtn.style.cursor = 'pointer';
+          checkUpdatesBtn.textContent = 'Проверить обновления';
+        }
+      });
+    }
+  }
+
+  function toggleSection(id) {
+    if (!content) return;
+    const sectionContent = content.querySelector(`.section-content-${id}`);
+    const arrow = content.querySelector(`.section-arrow-${id}`);
+    if (sectionContent && arrow) {
+      if (sectionContent.style.display === 'none') {
+        sectionContent.style.display = 'block';
+        arrow.textContent = '▼';
+      } else {
+        sectionContent.style.display = 'none';
+        arrow.textContent = '▶';
+      }
+    }
+  }
+
+  // ===== Проверка версии =====
+  const CURRENT_VERSION = '0.10.3';
+  const VERSION_CHECK_KEY = 'meter_scripts_version_check';
+  const VERSION_STORAGE_KEY = 'meter_scripts_version';
+  const GITHUB_REPO = 'JeanP00l/meterScripts';
+  const CACHE_DURATION = 60 * 60 * 1000; // 1 час в миллисекундах
+  const EXTENSION_ID = 'nbhcbdghjpllgmfilhnhkllmkecfmpld';
+
+  // Сохраняем текущую версию при первой загрузке
+  const storedVersion = localStorage.getItem(VERSION_STORAGE_KEY);
+  if (!storedVersion || storedVersion !== CURRENT_VERSION) {
+    localStorage.setItem(VERSION_STORAGE_KEY, CURRENT_VERSION);
+  }
+
+  // Функция сравнения версий (формат: "0.10.2")
+  function compareVersions(current, latest) {
+    const currentParts = current.split('.').map(Number);
+    const latestParts = latest.split('.').map(Number);
+    
+    for (let i = 0; i < Math.max(currentParts.length, latestParts.length); i++) {
+      const currentPart = currentParts[i] || 0;
+      const latestPart = latestParts[i] || 0;
+      
+      if (latestPart > currentPart) return -1; // Нужно обновление
+      if (latestPart < currentPart) return 1;  // Текущая новее (не должно быть)
+    }
+    
+    return 0; // Версии равны
+  }
+
+  // Функция нормализации версии (убирает префикс "v" если есть)
+  function normalizeVersion(tagName) {
+    return tagName.replace(/^v/i, '');
+  }
+
+  // Проверка версии (автоматическая при загрузке страницы)
+  // Всегда выполняет проверку, игнорируя кеш, чтобы пользователь всегда видел актуальную информацию
+  async function checkVersion() {
+    try {
+      // Всегда выполняем проверку при загрузке страницы, игнорируя кеш
+      return await checkVersionManual();
+    } catch (error) {
+      console.warn('Ошибка при проверке обновлений:', error);
+      return null;
+    }
+  }
+
+  // Принудительная проверка версии (для кнопки, игнорирует кеш)
+  async function checkVersionManual() {
+    try {
+      // Получаем последний релиз с GitHub
+      let response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`);
+      
+      // Если последнего релиза нет (404), получаем список всех релизов и берем первый
+      if (!response.ok && response.status === 404) {
+        response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases`);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        const releases = await response.json();
+        if (!releases || releases.length === 0) {
+          throw new Error('Нет доступных релизов');
+        }
+        // Берем первый релиз из списка (самый свежий)
+        const release = releases[0];
+        const latestVersion = normalizeVersion(release.tag_name);
+        
+        return processReleaseData(release, latestVersion);
+      }
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const release = await response.json();
+      const latestVersion = normalizeVersion(release.tag_name);
+      
+      return processReleaseData(release, latestVersion);
+    } catch (error) {
+      console.warn('Ошибка при проверке обновлений:', error);
+      throw error;
+    }
+  }
+
+  // Обработка данных релиза
+  function processReleaseData(release, latestVersion) {
+    // Ищем JSON файл в assets
+    let jsonUrl = null;
+    if (release.assets && release.assets.length > 0) {
+      // Ищем файл, содержащий "json" и "скрипт" или "script"
+      const jsonAsset = release.assets.find(asset => 
+        asset.name.toLowerCase().includes('.json') && 
+        (asset.name.toLowerCase().includes('скрипт') || 
+         asset.name.toLowerCase().includes('script') ||
+         asset.name.toLowerCase().includes('meter'))
+      );
+      if (jsonAsset) {
+        jsonUrl = jsonAsset.browser_download_url;
+      }
+    }
+
+    // Если не нашли в assets, используем страницу релиза как fallback
+    // Пользователь сможет скачать файл вручную
+    if (!jsonUrl) {
+      jsonUrl = release.html_url;
+    }
+
+    // Сравниваем версии
+    const comparison = compareVersions(CURRENT_VERSION, latestVersion);
+    const needsUpdate = comparison < 0;
+
+    const releaseUrl = release.html_url;
+    
+    const result = {
+      latestVersion,
+      needsUpdate,
+      downloadUrl: jsonUrl || releaseUrl,
+      releaseUrl: releaseUrl
+    };
+
+    // Сохраняем в кеш
+    localStorage.setItem(VERSION_CHECK_KEY, JSON.stringify({
+      timestamp: Date.now(),
+      ...result
+    }));
+
+    // Показываем уведомление, если нужно обновление
+    if (needsUpdate) {
+      showUpdateNotification(latestVersion, jsonUrl || releaseUrl, releaseUrl);
+    }
+
+    return result;
+  }
+
+  // Функция показа уведомления об обновлении
+  function showUpdateNotification(latestVersion, downloadUrl, releaseUrl) {
+    // Если releaseUrl не передан, используем downloadUrl (обратная совместимость)
+    if (!releaseUrl) {
+      releaseUrl = downloadUrl.includes('/releases/tag/') ? downloadUrl : `https://github.com/${GITHUB_REPO}/releases/latest`;
+    }
+    // Удаляем старое уведомление, если есть
+    const existing = document.getElementById('meter-scripts-update-notification');
+    if (existing) {
+      existing.remove();
+    }
+
+    const notification = document.createElement('div');
+    notification.id = 'meter-scripts-update-notification';
+    notification.style.cssText = `
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      font-family: sans-serif;
+      font-size: 12px;
+      padding: 8px 12px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      z-index: 1000000;
+      max-width: 200px;
+      cursor: pointer;
+      opacity: 0;
+      transform: translateY(-10px);
+      transition: opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease;
+    `;
+
+    notification.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 16px;">🔔</span>
+        <div style="flex: 1;">
+          <div style="font-weight: bold; margin-bottom: 4px;">Обновление доступно</div>
+          <div style="font-size: 11px; opacity: 0.9;">v${latestVersion}</div>
+        </div>
+        <button id="update-download-btn" style="
+          background: rgba(255,255,255,0.2);
+          border: 1px solid rgba(255,255,255,0.3);
+          color: white;
+          padding: 4px 8px;
+          border-radius: 4px;
+          cursor: pointer;
+          font-size: 11px;
+          font-weight: bold;
+        ">Скачать</button>
+      </div>
+      <div id="update-close-btn" style="
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        opacity: 0.8;
+        width: 16px;
+        height: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      ">×</div>
+    `;
+
+    // Анимация при наведении
+    notification.addEventListener('mouseenter', () => {
+      notification.style.transform = 'translateY(-2px)';
+      notification.style.boxShadow = '0 6px 16px rgba(0,0,0,0.4)';
+    });
+
+    notification.addEventListener('mouseleave', () => {
+      notification.style.transform = 'translateY(0)';
+      notification.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
+    });
+
+    // Обработчик кнопки закрытия
+    const closeBtn = notification.querySelector('#update-close-btn');
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      notification.style.opacity = '0';
+      notification.style.transform = 'translateY(-10px)';
+      setTimeout(() => notification.remove(), 300);
+    });
+
+    // Обработчик кнопки скачивания
+    const downloadBtn = notification.querySelector('#update-download-btn');
+    downloadBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      
+      try {
+        // Всегда открываем страницу релиза на GitHub
+        window.open(releaseUrl, '_blank');
+        
+        // Если это прямая ссылка на JSON файл, скачиваем его
+        if (downloadUrl.endsWith('.json') || downloadUrl.includes('/download/')) {
+          // Скачиваем JSON файл
+          const link = document.createElement('a');
+          link.href = downloadUrl;
+          link.download = `скрипты-${latestVersion}.json`;
+          link.target = '_blank';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        }
+      } catch (error) {
+        console.error('Ошибка при скачивании обновления:', error);
+        // Если не удалось, открываем страницу релиза
+        window.open(releaseUrl, '_blank');
+      }
+    });
+
+    document.body.appendChild(notification);
+
+    // Анимация появления
+    setTimeout(() => {
+      notification.style.opacity = '1';
+      notification.style.transform = 'translateY(0)';
+    }, 10);
+  }
+
+  // Запускаем проверку версии при загрузке страницы
+  if (document.body) {
+    // Небольшая задержка, чтобы не блокировать загрузку страницы
+    setTimeout(checkVersion, 2000);
+  } else {
+    document.addEventListener('DOMContentLoaded', () => {
+      setTimeout(checkVersion, 2000);
+    });
+  }
+
+  // Экспортируем менеджер в window
+  window.meterScriptsPanelManager = {
+    registerSection,
+    toggleSection
+  };
+
+})();
+

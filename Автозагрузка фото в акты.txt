@@ -1,0 +1,1963 @@
+// @description  Автоматическая загрузка фото в акты на основе номера счетчика из метаданных EXIF
+// @version      0.10.4
+// @author       meterScripts
+(() => {
+    'use strict';
+
+    // ===== Настройки =====
+    const CONFIG_KEY = 'auto_photo_upload_settings';
+    const PHOTOS_CACHE_KEY = 'auto_photo_upload_cache';
+    const SERVER_INDEX_KEY = 'photo_sync_server_index';
+    const CONTAINER_SELECTOR = 'div._photoField_vvuiq_1';
+
+    // Загружаем настройки
+    const saved = JSON.parse(localStorage.getItem(CONFIG_KEY) || '{}');
+    let enabled = saved.enabled ?? false;
+    let photosDirectory = saved.photosDirectory ?? null;
+    let photosCache = JSON.parse(localStorage.getItem(PHOTOS_CACHE_KEY) || '{}');
+    
+    // Восстанавливаем индекс из кеша при загрузке страницы
+    if (photosCache.files && photosCache.files.length > 0) {
+        window._photoIndex = buildPhotoIndex();
+    }
+
+    // ===== Утилиты =====
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    function showToast(text, time = 5000, color = '#333') {
+        let toastContainer = document.getElementById('toast-container');
+        if (!toastContainer) {
+            toastContainer = document.createElement('div');
+            toastContainer.id = 'toast-container';
+            Object.assign(toastContainer.style, {
+                position: 'fixed',
+                bottom: '20px',
+                right: '20px',
+                zIndex: '999999',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px',
+                pointerEvents: 'none',
+                alignItems: 'flex-end'
+            });
+            document.body.appendChild(toastContainer);
+        }
+
+        const toast = document.createElement('div');
+        toast.textContent = text;
+        Object.assign(toast.style, {
+            background: color,
+            color: '#fff',
+            padding: '10px 20px',
+            borderRadius: '10px',
+            fontSize: '14px',
+            opacity: '0',
+            pointerEvents: 'none',
+            fontFamily: 'sans-serif',
+            transition: 'opacity 0.3s ease, transform 0.3s ease',
+            transform: 'translateY(10px)',
+            maxWidth: '400px',
+            wordWrap: 'break-word',
+            whiteSpace: 'normal'
+        });
+
+        toastContainer.appendChild(toast);
+
+        setTimeout(() => {
+            toast.style.opacity = '0.95';
+            toast.style.transform = 'translateY(0)';
+        }, 10);
+
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(-10px)';
+            setTimeout(() => {
+                if (toast.parentNode) {
+                    toast.remove();
+                }
+                if (toastContainer.children.length === 0) {
+                    toastContainer.remove();
+                }
+            }, 300);
+        }, time);
+    }
+
+    // ===== Чтение EXIF метаданных =====
+    // Простая функция для чтения EXIF комментариев из JPEG файла
+    async function readEXIFComment(file) {
+        return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const arrayBuffer = e.target.result;
+                    const dataView = new DataView(arrayBuffer);
+                    
+                    // Проверяем JPEG маркер
+                    if (dataView.getUint8(0) !== 0xFF || dataView.getUint8(1) !== 0xD8) {
+                        resolve(null);
+                        return;
+                    }
+
+                    let offset = 2;
+                    let comment = null;
+
+                    // Ищем APP1 сегмент (EXIF)
+                    while (offset < arrayBuffer.byteLength - 1) {
+                        if (dataView.getUint8(offset) === 0xFF) {
+                            const marker = dataView.getUint8(offset + 1);
+                            
+                            // APP1 (0xE1) - EXIF
+                            if (marker === 0xE1) {
+                                const segmentLength = dataView.getUint16(offset + 2, false);
+                                const segmentData = new Uint8Array(arrayBuffer, offset + 4, segmentLength - 2);
+                                
+                                // Ищем "Exif" маркер
+                                const exifString = String.fromCharCode.apply(null, segmentData.slice(0, 4));
+                                if (exifString === 'Exif') {
+                                    // Пытаемся найти комментарий в EXIF данных
+                                    // Это упрощенная версия - ищем UserComment или Comment теги
+                                    const exifData = segmentData.slice(6);
+                                    const exifStringData = String.fromCharCode.apply(null, exifData);
+                                    
+                                    // Ищем паттерн комментария (может содержать номер счетчика с буквами)
+                                    // Ищем последовательности букв и цифр длиной >= 3 символов
+                                    const numberMatch = exifStringData.match(/[\wа-яА-ЯёЁ]{3,}/);
+                                    if (numberMatch) {
+                                        comment = numberMatch[0];
+                                    }
+                                }
+                            }
+                            
+                            // APP0 (0xE0) или другие сегменты
+                            if (marker >= 0xE0 && marker <= 0xEF) {
+                                const segmentLength = dataView.getUint16(offset + 2, false);
+                                offset += 2 + segmentLength;
+                                continue;
+                            }
+                        }
+                        offset++;
+                    }
+
+                    // Также проверяем COM сегмент (комментарий JPEG)
+                    offset = 2;
+                    while (offset < arrayBuffer.byteLength - 1) {
+                        if (dataView.getUint8(offset) === 0xFF && dataView.getUint8(offset + 1) === 0xFE) {
+                            const commentLength = dataView.getUint16(offset + 2, false);
+                            const commentData = new Uint8Array(arrayBuffer, offset + 4, commentLength - 2);
+                            const commentText = String.fromCharCode.apply(null, commentData);
+                            
+                            // Ищем номер счетчика в комментарии (может содержать буквы и цифры)
+                            const numberMatch = commentText.match(/[\wа-яА-ЯёЁ]{3,}/);
+                            if (numberMatch) {
+                                comment = numberMatch[0];
+                                break;
+                            }
+                        }
+                        offset++;
+                    }
+
+                    resolve(comment);
+                } catch (error) {
+                    console.warn('Ошибка чтения EXIF:', error);
+                    resolve(null);
+                }
+            };
+            reader.onerror = () => resolve(null);
+            reader.readAsArrayBuffer(file);
+        });
+    }
+
+    // Альтернативный метод: используем библиотеку exifr через CDN (если доступна)
+    async function readEXIFWithExifr(file) {
+        // Проверяем, доступна ли библиотека exifr
+        if (typeof window.exifr === 'undefined') {
+            // Загружаем библиотеку динамически
+            return new Promise((resolve) => {
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/exifr@7/dist/lite.umd.js';
+                script.onload = async () => {
+                    try {
+                        const exif = await window.exifr.parse(file, { userComment: true });
+                        if (exif && exif.UserComment) {
+                            // Ищем номер счетчика в комментарии (может содержать буквы и цифры)
+                            // Ищем последовательности букв и цифр длиной >= 3 символов
+                            const numberMatch = String(exif.UserComment).match(/[\wа-яА-ЯёЁ]{3,}/);
+                            if (numberMatch) {
+                                resolve(numberMatch[0]);
+                            } else {
+                                resolve(null);
+                            }
+                        } else {
+                            resolve(null);
+                        }
+                    } catch (error) {
+                        console.warn('Ошибка чтения EXIF через exifr:', error);
+                        resolve(null);
+                    }
+                };
+                script.onerror = () => resolve(null);
+                document.head.appendChild(script);
+            });
+        } else {
+            try {
+                const exif = await window.exifr.parse(file, { userComment: true });
+                if (exif && exif.UserComment) {
+                    // Ищем номер счетчика в комментарии (может содержать буквы и цифры)
+                    const numberMatch = String(exif.UserComment).match(/[\wа-яА-ЯёЁ]{10,}/);
+                    if (numberMatch) {
+                        return numberMatch[0];
+                    }
+                }
+                return null;
+            } catch (error) {
+                console.warn('Ошибка чтения EXIF через exifr:', error);
+                return null;
+            }
+        }
+    }
+
+    // Основная функция чтения метаданных (пробует оба метода)
+    async function getPhotoMetadata(file) {
+        // Сначала пробуем через exifr (более надежно)
+        let comment = await readEXIFWithExifr(file);
+        if (!comment) {
+            // Если не получилось, пробуем простой парсер
+            comment = await readEXIFComment(file);
+        }
+        // Возвращаем как есть (с буквами и цифрами)
+        return comment;
+    }
+
+    // ===== Восстановление доступа к директории после перезагрузки =====
+    async function restoreDirectoryAccess() {
+        // Пробуем восстановить доступ к директории через File System Access API
+        if (!('showDirectoryPicker' in window) || !photosDirectory) {
+            return null;
+        }
+
+        try {
+            // Запрашиваем доступ к директории снова (браузер может запомнить разрешение)
+            // К сожалению, нельзя напрямую открыть директорию по пути без диалога
+            // Но можно попробовать использовать IndexedDB для хранения handle (экспериментально)
+            
+            // Проверяем, есть ли сохраненный handle в IndexedDB
+            if ('indexedDB' in window) {
+                return new Promise((resolve) => {
+                    const request = indexedDB.open('photoDirectoryDB', 1);
+                    
+                    request.onerror = () => resolve(null);
+                    
+                    request.onsuccess = (e) => {
+                        const db = e.target.result;
+                        const transaction = db.transaction(['directories'], 'readonly');
+                        const store = transaction.objectStore('directories');
+                        const getRequest = store.get('directoryHandle');
+                        
+                        getRequest.onsuccess = async () => {
+                            const handle = getRequest.result;
+                            if (handle) {
+                                try {
+                                    // Проверяем, что handle еще валиден - пробуем прочитать корневую директорию
+                                    // Используем более надежный способ проверки
+                                    const entries = handle.values();
+                                    const firstEntry = await entries.next();
+                                    // Если удалось прочитать хотя бы одну запись, handle валиден
+                                    window._photoDirectoryHandle = handle;
+                                    resolve(handle);
+                                } catch (err) {
+                                    // Handle невалиден, удаляем из БД
+                                    try {
+                                        const deleteTransaction = db.transaction(['directories'], 'readwrite');
+                                        deleteTransaction.objectStore('directories').delete('directoryHandle');
+                                    } catch (deleteErr) {
+                                        // Игнорируем ошибки удаления
+                                    }
+                                    resolve(null);
+                                }
+                            } else {
+                                resolve(null);
+                            }
+                        };
+                        
+                        getRequest.onerror = () => resolve(null);
+                    };
+                    
+                    request.onupgradeneeded = (e) => {
+                        const db = e.target.result;
+                        if (!db.objectStoreNames.contains('directories')) {
+                            db.createObjectStore('directories');
+                        }
+                    };
+                });
+            }
+        } catch (error) {
+            console.warn('Ошибка восстановления доступа к директории:', error);
+        }
+        
+        return null;
+    }
+
+    // ===== Сохранение handle директории в IndexedDB =====
+    async function saveDirectoryHandle(handle) {
+        if (!('indexedDB' in window)) return;
+        
+        try {
+            return new Promise((resolve) => {
+                const request = indexedDB.open('photoDirectoryDB', 1);
+                
+                request.onerror = () => resolve(false);
+                
+                request.onsuccess = (e) => {
+                    const db = e.target.result;
+                    const transaction = db.transaction(['directories'], 'readwrite');
+                    const store = transaction.objectStore('directories');
+                    store.put(handle, 'directoryHandle');
+                    resolve(true);
+                };
+                
+                request.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains('directories')) {
+                        db.createObjectStore('directories');
+                    }
+                };
+            });
+        } catch (error) {
+            console.warn('Ошибка сохранения handle директории:', error);
+            return false;
+        }
+    }
+
+    // ===== Работа с директорией =====
+    async function selectPhotosDirectory() {
+        try {
+            // Пробуем использовать File System Access API (современные браузеры)
+            if ('showDirectoryPicker' in window) {
+                let directoryHandle;
+                try {
+                    directoryHandle = await window.showDirectoryPicker();
+                } catch (error) {
+                    // Если пользователь закрыл диалог без выбора (AbortError) - это нормально, не показываем ошибку
+                    if (error.name === 'AbortError' || error.name === 'NotAllowedError') {
+                        return null; // Просто возвращаем null, без ошибки
+                    }
+                    // Для других ошибок пробрасываем дальше
+                    throw error;
+                }
+                
+                // Очищаем старый кеш и индекс при выборе новой директории
+                window._photoFilesCache = null;
+                window._photoIndex = null;
+                photosCache = { files: [], timestamp: Date.now() };
+                
+                // Сохраняем handle в IndexedDB для восстановления после перезагрузки
+                await saveDirectoryHandle(directoryHandle);
+                
+                const files = [];
+                
+                showToast('⏳ Сканирование директории...', 3000, '#007acc');
+                
+                // Рекурсивно читаем все файлы из директории
+                async function readDirectory(dirHandle, path = '') {
+                    for await (const entry of dirHandle.values()) {
+                        if (entry.kind === 'file') {
+                            const file = await entry.getFile();
+                            if (file.type.startsWith('image/')) {
+                                files.push({
+                                    file: file,
+                                    name: file.name,
+                                    path: path + file.name,
+                                    handle: entry
+                                });
+                            }
+                        } else if (entry.kind === 'directory') {
+                            const subDirHandle = await entry;
+                            await readDirectory(subDirHandle, path + entry.name + '/');
+                        }
+                    }
+                }
+                
+                await readDirectory(directoryHandle);
+                
+                // Сохраняем handle для последующего использования
+                window._photoDirectoryHandle = directoryHandle;
+                
+                // Читаем метаданные для всех фото
+                showToast('⏳ Чтение метаданных фото...', 5000, '#007acc');
+                const photosWithMetadata = [];
+                
+                for (const photo of files) {
+                    const metadata = await getPhotoMetadata(photo.file);
+                    photosWithMetadata.push({
+                        name: photo.name,
+                        path: photo.path,
+                        metadata: metadata,
+                        file: photo.file
+                    });
+                }
+                
+                // Сохраняем в кеш (новый кеш заменяет старый)
+                photosCache = {
+                    files: photosWithMetadata.map(p => ({
+                        name: p.name,
+                        path: p.path,
+                        metadata: p.metadata
+                    })),
+                    timestamp: Date.now()
+                };
+                
+                localStorage.setItem(PHOTOS_CACHE_KEY, JSON.stringify(photosCache));
+                photosDirectory = directoryHandle.name;
+                localStorage.setItem(CONFIG_KEY, JSON.stringify({ enabled, photosDirectory }));
+                
+                // Сохраняем File объекты в памяти для быстрого доступа (новые заменяют старые)
+                window._photoFilesCache = photosWithMetadata;
+                
+                // Строим новый индекс для быстрого поиска (заменяет старый)
+                window._photoIndex = buildPhotoIndex();
+                
+                // Загружаем индекс из файла .index/photo_index.json если он есть
+                await loadIndexFromDirectory(directoryHandle);
+                
+                showToast(`✅ Обнаружено ${photosWithMetadata.length} фотографий`, 5000, '#2a7');
+                return photosWithMetadata;
+            } else {
+                // Fallback: используем input с webkitdirectory
+                return new Promise((resolve) => {
+                    const input = document.createElement('input');
+                    input.type = 'file';
+                    input.webkitdirectory = true;
+                    input.multiple = true;
+                    input.accept = 'image/*';
+                    
+                    // Обрабатываем отмену выбора
+                    input.oncancel = () => {
+                        resolve(null); // Пользователь закрыл диалог - это нормально
+                    };
+                    
+                    input.onchange = async (e) => {
+                        const files = Array.from(e.target.files).filter(f => f.type.startsWith('image/'));
+                        
+                        // Очищаем старый кеш и индекс при выборе новой директории
+                        window._photoFilesCache = null;
+                        window._photoIndex = null;
+                        photosCache = { files: [], timestamp: Date.now() };
+                        
+                        // Очищаем старый handle из IndexedDB (если был)
+                        if ('indexedDB' in window) {
+                            try {
+                                const request = indexedDB.open('photoDirectoryDB', 1);
+                                request.onsuccess = (e) => {
+                                    const db = e.target.result;
+                                    const transaction = db.transaction(['directories'], 'readwrite');
+                                    transaction.objectStore('directories').delete('directoryHandle');
+                                };
+                            } catch (err) {
+                                // Игнорируем ошибки очистки
+                            }
+                        }
+                        window._photoDirectoryHandle = null;
+                        
+                        showToast('⏳ Чтение метаданных фото...', 5000, '#007acc');
+                        
+                        const photosWithMetadata = [];
+                        for (const file of files) {
+                            const metadata = await getPhotoMetadata(file);
+                            photosWithMetadata.push({
+                                name: file.name,
+                                path: file.webkitRelativePath || file.name,
+                                metadata: metadata,
+                                file: file
+                            });
+                        }
+                        
+                        // Сохраняем в кеш (новый кеш заменяет старый)
+                        photosCache = {
+                            files: photosWithMetadata.map(p => ({
+                                name: p.name,
+                                path: p.path,
+                                metadata: p.metadata
+                            })),
+                            timestamp: Date.now()
+                        };
+                        
+                        localStorage.setItem(PHOTOS_CACHE_KEY, JSON.stringify(photosCache));
+                        photosDirectory = files.length > 0 ? files[0].webkitRelativePath.split('/')[0] : 'Выбранная директория';
+                        localStorage.setItem(CONFIG_KEY, JSON.stringify({ enabled, photosDirectory }));
+                        
+                        // Сохраняем File объекты в памяти для быстрого доступа (новые заменяют старые)
+                        window._photoFilesCache = photosWithMetadata;
+                        
+                        // Строим новый индекс для быстрого поиска (заменяет старый)
+                        window._photoIndex = buildPhotoIndex();
+                        
+                        showToast(`✅ Обнаружено ${photosWithMetadata.length} фотографий`, 5000, '#2a7');
+                        
+                        resolve(photosWithMetadata);
+                    };
+                    
+                    input.click();
+                });
+            }
+        } catch (error) {
+            // Игнорируем ошибки отмены выбора пользователем
+            if (error.name === 'AbortError' || error.name === 'NotAllowedError') {
+                // Пользователь просто закрыл диалог - это нормально
+                return null;
+            }
+            // Для реальных ошибок показываем сообщение
+            console.error('Ошибка выбора директории:', error);
+            showToast(`❌ Ошибка: ${error.message}`, 5000, '#a33');
+            return null;
+        }
+    }
+
+    // ===== Загрузка индекса из файла .index/photo_index.json =====
+    async function loadIndexFromDirectory(directoryHandle) {
+        try {
+            // Пытаемся прочитать .index/photo_index.json
+            const indexDirHandle = await directoryHandle.getDirectoryHandle('.index');
+            const indexFileHandle = await indexDirHandle.getFileHandle('photo_index.json');
+            const indexFile = await indexFileHandle.getFile();
+            const indexText = await indexFile.text();
+            const indexData = JSON.parse(indexText);
+            
+            // Сохраняем в localStorage
+            localStorage.setItem(SERVER_INDEX_KEY, JSON.stringify(indexData));
+            window._savedServerIndex = indexData;
+            console.log('[AutoPhotoUpload] Индекс загружен из файла:', Object.keys(indexData).length, 'счетчиков');
+            return indexData;
+        } catch (error) {
+            // Если файл не найден - это не критично (может быть старая директория или еще не синхронизировали)
+            if (error.name !== 'NotFoundError') {
+                console.warn('[AutoPhotoUpload] Не удалось загрузить индекс из файла:', error);
+            }
+            return null;
+        }
+    }
+
+    // ===== Поиск номера ПУ на странице =====
+    // Кешируем результат поиска для ускорения
+    let cachedCounterNumber = null;
+    let cachedCounterElement = null;
+    
+    function findCounterNumber() {
+        // Сначала проверяем кеш - если элемент все еще в DOM, возвращаем кешированное значение
+        if (cachedCounterNumber && cachedCounterElement && document.contains(cachedCounterElement)) {
+            return cachedCounterNumber;
+        }
+        
+        // Ищем поле с номером ПУ по селектору из примера пользователя
+        // <div class="_selectField_1ydb5_1"><label><span>№ ПУ - <b>0011067128144508</b></span></label>...
+        // Оптимизация: используем более специфичный селектор для ускорения
+        const labels = document.querySelectorAll('label');
+        for (const label of labels) {
+            const labelText = label.textContent || '';
+            // Быстрая проверка - содержит ли label текст "№ ПУ"
+            if (labelText.includes('№ ПУ')) {
+                // Ищем тег <b> внутри label или span
+                const boldTag = label.querySelector('b') || label.querySelector('span b');
+                if (boldTag) {
+                    const number = boldTag.textContent.trim();
+                    // Сохраняем номер как есть (с буквами, цифрами, дефисами)
+                    // Убираем только пробелы, но сохраняем дефисы, буквы и цифры
+                    const cleanNumber = number.replace(/\s+/g, ''); // Убираем только пробелы
+                    if (cleanNumber.length >= 3) {
+                        // Кешируем результат (сохраняем с дефисами для правильного поиска)
+                        cachedCounterNumber = cleanNumber;
+                        cachedCounterElement = label;
+                        return cleanNumber;
+                    }
+                }
+                // Если не нашли в <b>, пробуем извлечь из всего текста label
+                // Ищем паттерн с буквами, цифрами и дефисами
+                const numberMatch = labelText.match(/№\s*ПУ[^\wа-яА-ЯёЁ-]*([\wа-яА-ЯёЁ-]{3,})/);
+                if (numberMatch) {
+                    const cleanNumber = numberMatch[1].replace(/\s+/g, ''); // Убираем только пробелы
+                    cachedCounterNumber = cleanNumber;
+                    cachedCounterElement = label;
+                    return cleanNumber;
+                }
+            }
+        }
+        
+        // Очищаем кеш, если не нашли
+        cachedCounterNumber = null;
+        cachedCounterElement = null;
+        return null;
+    }
+
+    // ===== Индекс для быстрого поиска фото =====
+    function buildPhotoIndex() {
+        if (!photosCache.files || photosCache.files.length === 0) {
+            return null;
+        }
+
+        // Создаем индекс: номер счетчика -> массив фото
+        const index = {};
+        const normalize = (str) => String(str || '').toLowerCase().replace(/[^\wа-яё]/g, '');
+        
+        for (const photo of photosCache.files) {
+            // ПРИОРИТЕТ 1: Индексируем по метаданным (userComment из EXIF) - это основной способ
+            if (photo.metadata) {
+                const normalizedMetadata = normalize(photo.metadata);
+                // Используем весь нормализованный metadata как ключ (как на сервере)
+                if (normalizedMetadata.length >= 3) {
+                    if (!index[normalizedMetadata]) index[normalizedMetadata] = [];
+                    if (!index[normalizedMetadata].find(p => p.name === photo.name && p.path === photo.path)) {
+                        index[normalizedMetadata].push(photo);
+                    }
+                }
+            }
+            
+            // ПРИОРИТЕТ 2: Индексируем по имени файла (если содержит номер счетчика длиной >= 3)
+            const normalizedName = normalize(photo.name);
+            const numbersInName = normalizedName.match(/[\wа-яё]{3,}/g);
+            if (numbersInName) {
+                for (const num of numbersInName) {
+                    // Не дублируем, если уже есть по metadata
+                    if (!photo.metadata || normalize(photo.metadata) !== num) {
+                        if (!index[num]) index[num] = [];
+                        if (!index[num].find(p => p.name === photo.name && p.path === photo.path)) {
+                            index[num].push(photo);
+                        }
+                    }
+                }
+            }
+        }
+        
+        return index;
+    }
+
+    // ===== Поиск фото по номеру счетчика (использует сохраненный индекс и файл) =====
+    async function findPhotosByCounterNumber(counterNumber) {
+        if (!counterNumber) {
+            return [];
+        }
+
+        // Нормализуем номер счетчика для поиска
+        const normalize = (str) => String(str || '').toLowerCase().replace(/[^\wа-яё]/g, '');
+        const normalizedCounterNumber = normalize(counterNumber);
+
+        // ПРИОРИТЕТ 1: Сохраненный индекс из localStorage
+        try {
+            const savedIndexStr = localStorage.getItem(SERVER_INDEX_KEY);
+            if (savedIndexStr) {
+                const savedIndex = JSON.parse(savedIndexStr);
+                
+                // Ищем в сохраненном индексе
+                let indexPhotos = savedIndex[normalizedCounterNumber] || [];
+                
+                // Если не нашли точное совпадение, пробуем варианты обрезки
+                if (indexPhotos.length === 0 && normalizedCounterNumber.length > 3) {
+                    for (let len = normalizedCounterNumber.length - 1; len >= 3; len--) {
+                        const truncated = normalizedCounterNumber.substring(0, len);
+                        indexPhotos = savedIndex[truncated] || [];
+                        if (indexPhotos.length > 0) {
+                            break;
+                        }
+                    }
+                }
+                
+                if (indexPhotos.length > 0) {
+                    // Конвертируем фото из индекса в формат для uploadPhotos
+                    const serverPhotos = [];
+                    for (const photo of indexPhotos) {
+                        const fileName = photo.path.split(/[/\\]/).pop() || photo.path;
+                        const cachedFile = photosCache.files?.find(f => 
+                            f.path === photo.path || 
+                            f.name === fileName || 
+                            f.path.endsWith(fileName) ||
+                            f.name === fileName
+                        );
+                        
+                        if (cachedFile) {
+                            serverPhotos.push(cachedFile);
+                        } else {
+                            // Если файл не в кеше, пробуем найти по userComment
+                            const matchingByComment = photosCache.files?.filter(f => 
+                                normalize(f.metadata || '') === normalize(photo.userComment || '')
+                            );
+                            if (matchingByComment && matchingByComment.length > 0) {
+                                serverPhotos.push(...matchingByComment);
+                            } else {
+                                // Создаем объект для файла, который будет загружен из директории
+                                serverPhotos.push({
+                                    name: fileName,
+                                    path: photo.path,
+                                    metadata: photo.userComment || '',
+                                    file: null,
+                                    fullPath: photo.fullPath
+                                });
+                            }
+                        }
+                    }
+                    
+                    if (serverPhotos.length > 0) {
+                        console.log('[AutoPhotoUpload] Найдено', serverPhotos.length, 'фото в сохраненном индексе');
+                        return serverPhotos;
+                    }
+                }
+            }
+        } catch (indexError) {
+            console.warn('[AutoPhotoUpload] Ошибка при использовании сохраненного индекса:', indexError);
+        }
+
+        // ПРИОРИТЕТ 2: Чтение индекса из файла .index/photo_index.json
+        if (window._photoDirectoryHandle) {
+            try {
+                const fileIndex = await loadIndexFromDirectory(window._photoDirectoryHandle);
+                if (fileIndex) {
+                    // Ищем в индексе из файла
+                    let indexPhotos = fileIndex[normalizedCounterNumber] || [];
+                    
+                    // Если не нашли точное совпадение, пробуем варианты обрезки
+                    if (indexPhotos.length === 0 && normalizedCounterNumber.length > 3) {
+                        for (let len = normalizedCounterNumber.length - 1; len >= 3; len--) {
+                            const truncated = normalizedCounterNumber.substring(0, len);
+                            indexPhotos = fileIndex[truncated] || [];
+                            if (indexPhotos.length > 0) {
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (indexPhotos.length > 0) {
+                        // Конвертируем фото из индекса в формат для uploadPhotos
+                        const serverPhotos = [];
+                        for (const photo of indexPhotos) {
+                            const fileName = photo.path.split(/[/\\]/).pop() || photo.path;
+                            const cachedFile = photosCache.files?.find(f => 
+                                f.path === photo.path || 
+                                f.name === fileName || 
+                                f.path.endsWith(fileName) ||
+                                f.name === fileName
+                            );
+                            
+                            if (cachedFile) {
+                                serverPhotos.push(cachedFile);
+                            } else {
+                                // Если файл не в кеше, пробуем найти по userComment
+                                const matchingByComment = photosCache.files?.filter(f => 
+                                    normalize(f.metadata || '') === normalize(photo.userComment || '')
+                                );
+                                if (matchingByComment && matchingByComment.length > 0) {
+                                    serverPhotos.push(...matchingByComment);
+                                } else {
+                                    // Создаем объект для файла, который будет загружен из директории
+                                    serverPhotos.push({
+                                        name: fileName,
+                                        path: photo.path,
+                                        metadata: photo.userComment || '',
+                                        file: null,
+                                        fullPath: photo.fullPath
+                                    });
+                                }
+                            }
+                        }
+                        
+                        if (serverPhotos.length > 0) {
+                            console.log('[AutoPhotoUpload] Найдено', serverPhotos.length, 'фото в индексе из файла');
+                            return serverPhotos;
+                        }
+                    }
+                }
+            } catch (error) {
+                console.warn('[AutoPhotoUpload] Не удалось загрузить индекс из файла:', error);
+            }
+        }
+
+        // ПРИОРИТЕТ 3: Используем локальный индекс из кеша (fallback)
+        if (!photosCache.files || photosCache.files.length === 0) {
+            return [];
+        }
+
+        // Строим индекс из локального кеша
+        if (!window._photoIndex) {
+            window._photoIndex = buildPhotoIndex();
+        }
+        
+        const index = window._photoIndex;
+        if (!index) {
+            return [];
+        }
+
+        // Пробуем разные варианты нормализованного номера
+        // 1. Полная нормализация (убираем все спецсимволы): "06669846-10" → "0666984610"
+        let matchingPhotos = index[normalizedCounterNumber] || [];
+        
+        // 2. Если не нашли, пробуем без суффикса (для случая "06669846-10" → ищем "06669846")
+        if (matchingPhotos.length === 0 && normalizedCounterNumber.length > 3) {
+            // Пробуем различные варианты обрезки с конца
+            for (let len = normalizedCounterNumber.length - 1; len >= 3; len--) {
+                const truncated = normalizedCounterNumber.substring(0, len);
+                matchingPhotos = index[truncated] || [];
+                if (matchingPhotos.length > 0) {
+                    break;
+                }
+            }
+        }
+
+        // ПРИОРИТЕТ 3: Если не нашли в индексе, пробуем поиск по userComment (metadata)
+        if (matchingPhotos.length === 0) {
+            matchingPhotos = photosCache.files.filter(photo => {
+                const normalizedMetadata = normalize(photo.metadata || '');
+                if (!normalizedMetadata || normalizedMetadata.length < 3) return false;
+                
+                // Точное совпадение
+                if (normalizedMetadata === normalizedCounterNumber) {
+                    return true;
+                }
+                
+                // Если metadata является началом counterNumber (например, "06669846" начинается "0666984610")
+                if (normalizedCounterNumber.startsWith(normalizedMetadata) && normalizedMetadata.length >= 3) {
+                    return true;
+                }
+                
+                // Если counterNumber является началом metadata
+                if (normalizedMetadata.startsWith(normalizedCounterNumber) && normalizedCounterNumber.length >= 3) {
+                    return true;
+                }
+                
+                return false;
+            });
+        }
+
+        // Убираем дубликаты
+        const uniquePhotos = [];
+        const seen = new Set();
+        for (const photo of matchingPhotos) {
+            const key = `${photo.name}|${photo.path}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                uniquePhotos.push(photo);
+            }
+        }
+
+        return uniquePhotos;
+    }
+
+    // ===== Проверка, загружены ли фото уже =====
+    function checkPhotosAlreadyUploaded(photoNames) {
+        const container = document.querySelector(CONTAINER_SELECTOR);
+        
+        if (!container) {
+            return { allUploaded: false, uploadedCount: 0, totalCount: photoNames.length };
+        }
+
+        // Получаем список уже загруженных фото из input
+        const siteInput = getSiteFileInput();
+        const uploadedFileNames = new Set();
+        
+        if (siteInput && siteInput.files && siteInput.files.length > 0) {
+            for (let i = 0; i < siteInput.files.length; i++) {
+                uploadedFileNames.add(siteInput.files[i].name.toLowerCase());
+            }
+        }
+
+        // Также проверяем изображения в контейнере (на случай, если они уже отображаются)
+        const images = container.querySelectorAll('img');
+        
+        images.forEach((img) => {
+            const src = img.src || img.getAttribute('src') || img.getAttribute('data-src') || '';
+            if (src) {
+                // Извлекаем имя файла из URL (если это blob или data URL)
+                const fileNameMatch = src.match(/([^/\\]+\.(jpg|jpeg|png|gif|webp))(?:\?|$)/i);
+                if (fileNameMatch) {
+                    uploadedFileNames.add(fileNameMatch[1].toLowerCase());
+                }
+            }
+        });
+        
+        // КРИТИЧНО: Проверяем элементы с background-image (фото отображаются через стили!)
+        const photoItems = container.querySelectorAll('[class*="photoItem"], [class*="photo-item"], div[style*="background-image"]');
+        
+        photoItems.forEach((item) => {
+            // Проверяем inline style
+            const inlineStyle = item.getAttribute('style') || '';
+            // Проверяем computed style
+            const computedStyle = window.getComputedStyle(item).backgroundImage || '';
+            const bgImage = inlineStyle.match(/background-image:\s*url\(['"]?([^'"]+)['"]?\)/i) || 
+                           computedStyle.match(/url\(['"]?([^'"]+)['"]?\)/i);
+            
+            if (bgImage && bgImage[1]) {
+                const bgSrc = bgImage[1];
+                // Если это data URL или blob URL, считаем что фото уже загружено
+                if (bgSrc.startsWith('data:') || bgSrc.startsWith('blob:')) {
+                    // Если есть background-image, считаем что фото уже загружено (даже если не можем извлечь имя файла)
+                    // Добавляем маркер в uploadedFileNames
+                    uploadedFileNames.add('_has_background_image_');
+                }
+            }
+        });
+        
+        // Также проверяем все элементы с превью фото (могут быть в разных форматах)
+        const photoElements = container.querySelectorAll('[class*="photo"], [class*="image"], [class*="preview"], [class*="thumbnail"]');
+        
+        photoElements.forEach(el => {
+            // Проверяем data-атрибуты с именами файлов
+            const fileName = el.getAttribute('data-filename') || el.getAttribute('data-name') || el.getAttribute('title') || '';
+            if (fileName && fileName.match(/\.(jpg|jpeg|png|gif|webp)$/i)) {
+                uploadedFileNames.add(fileName.toLowerCase());
+            }
+        });
+
+        // КРИТИЧНО: Если есть элементы с background-image (фото отображаются через стили),
+        // но input.files пуст - это означает, что фото уже загружены и отображаются,
+        // но не сохранены в input (например, после перезагрузки страницы)
+        // В этом случае считаем, что все фото уже загружены, чтобы не дублировать
+        // Если есть элементы с background-image, но input.files пуст - фото уже загружены
+        if (photoItems.length > 0 && uploadedFileNames.has('_has_background_image_') && siteInput && (!siteInput.files || siteInput.files.length === 0)) {
+            // Возвращаем, что все фото уже загружены, чтобы не дублировать
+            return {
+                allUploaded: true,
+                uploadedCount: photoNames.length,
+                totalCount: photoNames.length
+            };
+        }
+        
+        // Также проверяем старую логику для img элементов
+        if (images.length > 0 && uploadedFileNames.size === 0 && siteInput && (!siteInput.files || siteInput.files.length === 0)) {
+            // Возвращаем, что все фото уже загружены, чтобы не дублировать
+            return {
+                allUploaded: true,
+                uploadedCount: photoNames.length,
+                totalCount: photoNames.length
+            };
+        }
+
+        // Проверяем, есть ли среди загружаемых фото те, которые уже загружены
+        const alreadyUploaded = photoNames.filter(name => 
+            uploadedFileNames.has(name.toLowerCase())
+        );
+
+        const result = {
+            allUploaded: alreadyUploaded.length === photoNames.length && photoNames.length > 0,
+            uploadedCount: alreadyUploaded.length,
+            totalCount: photoNames.length
+        };
+        
+        return result;
+    }
+
+    // ===== Загрузка фото =====
+    async function uploadPhotos(files) {
+        const siteInput = getSiteFileInput();
+        if (!siteInput) {
+            showToast('❌ Поле загрузки фото не найдено', 3000, '#a33');
+            return false;
+        }
+
+        // Проверяем, не загружены ли фото уже
+        const photoNames = files.map(f => f.name);
+        const uploadCheck = checkPhotosAlreadyUploaded(photoNames);
+        
+        if (uploadCheck && uploadCheck.allUploaded) {
+            // Все фото уже загружены
+            return true; // Возвращаем true, так как фото уже на месте
+        }
+
+        // Фильтруем только те фото, которые еще не загружены
+        const filesToUpload = files.filter(file => {
+            const fileName = file.name.toLowerCase();
+            const container = document.querySelector(CONTAINER_SELECTOR);
+            if (!container) return true;
+
+            const siteInput = getSiteFileInput();
+            if (siteInput && siteInput.files) {
+                for (let i = 0; i < siteInput.files.length; i++) {
+                    if (siteInput.files[i].name.toLowerCase() === fileName) {
+                        return false; // Файл уже загружен
+                    }
+                }
+            }
+            return true; // Файл еще не загружен
+        });
+
+        if (filesToUpload.length === 0) {
+            // Все фото уже загружены
+            return true;
+        }
+
+        // Преобразуем кешированные данные обратно в File объекты только для новых фото
+        const fileObjects = [];
+        
+        // Если есть кеш в памяти
+        if (window._photoFilesCache) {
+            for (const photoInfo of filesToUpload) {
+                const cached = window._photoFilesCache.find(p => 
+                    p.name === photoInfo.name && p.path === photoInfo.path
+                );
+                if (cached && cached.file) {
+                    fileObjects.push(cached.file);
+                }
+            }
+        }
+
+        // Если не нашли в кеше памяти, пробуем использовать File System Access API handle
+        if (fileObjects.length === 0) {
+            // Убеждаемся, что handle восстановлен
+            await waitForDirectoryRestore();
+            
+            if (window._photoDirectoryHandle) {
+                try {
+                    // Пробуем прочитать файлы из сохраненного handle (только новые)
+                    for (const photoInfo of filesToUpload) {
+                        try {
+                            // Разбираем путь к файлу
+                            const pathParts = photoInfo.path.split('/').filter(p => p);
+                            let currentHandle = window._photoDirectoryHandle;
+                            
+                            // Если путь начинается с имени директории, пропускаем его
+                            let startIndex = 0;
+                            if (pathParts.length > 0 && pathParts[0] === photosDirectory) {
+                                startIndex = 1;
+                            }
+                            
+                            // Проходим по пути к файлу
+                            for (let i = startIndex; i < pathParts.length - 1; i++) {
+                                if (pathParts[i]) {
+                                    currentHandle = await currentHandle.getDirectoryHandle(pathParts[i]);
+                                }
+                            }
+                            
+                            // Получаем файл
+                            const fileName = pathParts[pathParts.length - 1];
+                            const fileHandle = await currentHandle.getFileHandle(fileName);
+                            const file = await fileHandle.getFile();
+                            fileObjects.push(file);
+                        } catch (err) {
+                            console.warn(`Не удалось прочитать файл ${photoInfo.path}:`, err);
+                            // Пробуем альтернативный способ - ищем файл по имени в корневой директории
+                            try {
+                                const fileName = photoInfo.name;
+                                const fileHandle = await window._photoDirectoryHandle.getFileHandle(fileName);
+                                const file = await fileHandle.getFile();
+                                fileObjects.push(file);
+                            } catch (altErr) {
+                                // Игнорируем ошибку альтернативного способа
+                            }
+                        }
+                    }
+                } catch (err) {
+                    console.warn('Ошибка чтения файлов из директории:', err);
+                }
+            }
+        }
+
+        // Если все еще не нашли файлы
+        if (fileObjects.length === 0) {
+            // Не показываем ошибку сразу - возможно, handle еще восстанавливается
+            // Показываем только если точно нет доступа
+            if (!window._photoFilesCache && !window._photoDirectoryHandle) {
+                showToast('⚠️ Файлы не найдены в кеше. Пожалуйста, выберите директорию заново.', 5000, '#f59e0b');
+            }
+            return false;
+        }
+
+        // Проверяем, есть ли уже загруженные фото на странице
+        // Нужно "дойти до конца списка фото" перед загрузкой новых
+        const container = document.querySelector(CONTAINER_SELECTOR);
+        if (container) {
+            // Ищем уже загруженные фото (обычно это img элементы или превью)
+            const existingPhotos = container.querySelectorAll('img, [class*="photo"], [class*="image"]');
+            
+            // Если есть уже загруженные фото, добавляем новые в конец
+            // Создаем DataTransfer с существующими файлами (если они есть в input)
+            const dt = new DataTransfer();
+            
+            // Добавляем существующие файлы из input (если они есть)
+            if (siteInput.files && siteInput.files.length > 0) {
+                for (let i = 0; i < siteInput.files.length; i++) {
+                    dt.items.add(siteInput.files[i]);
+                }
+            }
+            
+            // Добавляем новые файлы
+            fileObjects.forEach(f => dt.items.add(f));
+            
+            // Устанавливаем все файлы (старые + новые)
+            siteInput.files = dt.files;
+            siteInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+            return true;
+        }
+
+        // Если контейнер не найден, просто загружаем файлы
+        const dt = new DataTransfer();
+        fileObjects.forEach(f => dt.items.add(f));
+        
+        siteInput.files = dt.files;
+        siteInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+        return true;
+    }
+
+    // Получаем input для загрузки фото
+    function getSiteFileInput() {
+        const container = document.querySelector(CONTAINER_SELECTOR);
+        if (!container) return null;
+        return container.querySelector('input[type="file"][multiple]') || 
+               container.querySelector('input[type="file"]');
+    }
+
+    // ===== Основная логика автозагрузки =====
+    async function autoUploadPhotos(counterNumberParam = null) {
+        if (!enabled) return;
+
+        // Проверяем наличие поля загрузки
+        const container = document.querySelector(CONTAINER_SELECTOR);
+        if (!container) return;
+
+        // Проверяем, что есть кеш фото
+        if (!photosCache.files || photosCache.files.length === 0) {
+            console.log('[AutoPhotoUpload] Кеш фото пуст');
+            return;
+        }
+
+        // Убеждаемся, что директория восстановлена (если используется File System Access API)
+        await waitForDirectoryRestore();
+
+        // Ищем номер счетчика (если не передан как параметр)
+        const counterNumber = counterNumberParam || findCounterNumber();
+        if (!counterNumber) {
+            console.log('[AutoPhotoUpload] Номер счетчика не найден');
+            return;
+        }
+
+        console.log(`[AutoPhotoUpload] Найден номер счетчика: ${counterNumber}`);
+
+        // Ищем фото с этим номером
+        const matchingPhotos = await findPhotosByCounterNumber(counterNumber);
+        
+        if (matchingPhotos.length === 0) {
+            showToast(`📷 Фото для счетчика ${counterNumber} не найдено`, 5000, '#f59e0b');
+            return;
+        }
+
+        // Небольшая задержка только для проверки уже загруженных фото
+        // (чтобы дать время React обновить input.files после перезагрузки страницы)
+        await wait(300);
+
+        // Проверяем, не загружены ли фото уже
+        const photoNames = matchingPhotos.map(p => p.name);
+        const uploadCheck = checkPhotosAlreadyUploaded(photoNames);
+        
+        if (uploadCheck && uploadCheck.allUploaded) {
+            // Все фото уже загружены
+            showToast(`✅ Фото для счетчика ${counterNumber} уже загружены (${uploadCheck.uploadedCount} фото)`, 4000, '#2a7');
+            return;
+        }
+
+        // Загружаем найденные фото (только те, которые еще не загружены)
+        const success = await uploadPhotos(matchingPhotos);
+        if (success) {
+            const uploadedCount = matchingPhotos.length - uploadCheck.uploadedCount;
+            if (uploadCheck.uploadedCount > 0) {
+                showToast(`✅ Загружено ${uploadedCount} новых фото (${uploadCheck.uploadedCount} уже были загружены)`, 5000, '#2a7');
+            } else {
+                showToast(`✅ Поиск фото окончен. Найдено и загружено ${matchingPhotos.length} фото`, 5000, '#2a7');
+            }
+        } else {
+            // Показываем более информативное сообщение об ошибке
+            if (!window._photoFilesCache && !window._photoDirectoryHandle) {
+                showToast(`⚠️ Не удалось восстановить доступ к директории. Пожалуйста, выберите директорию заново.`, 7000, '#a33');
+            } else {
+                showToast(`⚠️ Найдено ${matchingPhotos.length} фото, но не удалось загрузить. Проверьте доступ к файлам.`, 7000, '#a33');
+            }
+        }
+    }
+
+    // ===== Синхронизация фото с Android =====
+    const SYNC_SERVER_URL = 'http://localhost:8080';
+    const INSTRUCTIONS_KEY = 'photoSync_instructions_shown';
+    let syncToken = null;
+    let syncStatusInterval = null;
+    let syncModal = null;
+    let instructionsModal = null;
+
+    function showSyncInstructionsModal(onContinue) {
+        // Удаляем старое модальное окно, если есть
+        if (instructionsModal) {
+            instructionsModal.remove();
+        }
+
+        instructionsModal = document.createElement('div');
+        instructionsModal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.7);
+            z-index: 9999998;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        `;
+
+        const modalContent = document.createElement('div');
+        modalContent.style.cssText = `
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+        `;
+
+        const instructionsHtml = `
+            <h2 style="margin-top:0; color:#333;">Как синхронизировать фото</h2>
+            <div style="line-height:1.6; color:#555; margin-bottom:20px;">
+                <ol style="margin:0; padding-left:20px; text-align:left;">
+                    <li style="margin-bottom:12px;"><strong>Скачайте программу</strong><br>
+                        Перейдите на <a href="https://github.com/JeanP00l/photo-sync-server/releases" target="_blank" style="color:#007acc;">сайт GitHub</a> и скачайте программу синхронизации на компьютер photo-sync-server. Поместите файл в папку на рабочий стол.</li>
+                    <li style="margin-bottom:12px;"><strong>Запустите программу</strong><br>
+                        Дважды кликните на скачанный файл photo-sync-server. Появится окно - не закрывайте его во время синхронизации</li>
+                    <li style="margin-bottom:12px;"><strong>Откройте сайт</strong><br>
+                        В браузере откройте сайт проверки и войдите в систему</li>
+                    <li style="margin-bottom:12px;"><strong>Начните синхронизацию</strong><br>
+                        Нажмите кнопку "Синхронизация фото" в "Автозагрузка фото" в настройках скриптов</li>
+                    <li style="margin-bottom:12px;"><strong>Подключите телефон</strong><br>
+                        На телефоне откройте приложение MeterSync, на экране входа нажмите "Синхронизировать фото" и отсканируйте QR-код или введите токен вручную</li>
+                    <li style="margin-bottom:12px;"><strong>Дождитесь завершения</strong><br>
+                        Дождитесь окончания синхронизации. После этого можно закрыть photo-sync-server на компьютере</li>
+                    <li style="margin-bottom:12px;"><strong>Настройте скрипт</strong><br>
+                        В настройках скриптов в "Автозагрузка фото" нажимите "Выбрать директорию с фото" и выберите папку с фото (папка meter рядом со скачанным файлом photo-sync-server)</li>
+                    <li style="margin-bottom:12px;"><strong>Повторная синхронизация</strong><br>
+                        Перед следующей синхронизацией снова запустите программу на компьютере</li>
+                </ol>
+            </div>
+            <div style="margin-bottom:15px;">
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                    <input type="checkbox" id="dontShowAgain" style="cursor:pointer;">
+                    <span style="color:#555;">Больше не показывать</span>
+                </label>
+            </div>
+            <div style="display:flex; gap:10px; justify-content:flex-end;">
+                <button id="instructionsCancel" style="
+                    padding:8px 16px;
+                    background:#ccc;
+                    color:#333;
+                    border:none;
+                    border-radius:5px;
+                    cursor:pointer;
+                    font-size:14px;
+                ">Отмена</button>
+                <button id="instructionsOk" style="
+                    padding:8px 16px;
+                    background:#007acc;
+                    color:white;
+                    border:none;
+                    border-radius:5px;
+                    cursor:pointer;
+                    font-size:14px;
+                    font-weight:bold;
+                ">Понятно</button>
+            </div>
+        `;
+
+        modalContent.innerHTML = instructionsHtml;
+        instructionsModal.appendChild(modalContent);
+        document.body.appendChild(instructionsModal);
+
+        // Обработчики кнопок
+        const dontShowAgain = modalContent.querySelector('#dontShowAgain');
+        const okBtn = modalContent.querySelector('#instructionsOk');
+        const cancelBtn = modalContent.querySelector('#instructionsCancel');
+
+        const closeModal = () => {
+            if (instructionsModal) {
+                instructionsModal.remove();
+                instructionsModal = null;
+            }
+        };
+
+        okBtn.addEventListener('click', () => {
+            // Сохраняем флаг "Больше не показывать"
+            if (dontShowAgain.checked) {
+                localStorage.setItem(INSTRUCTIONS_KEY, 'true');
+            }
+            closeModal();
+            // Вызываем callback для продолжения синхронизации
+            if (onContinue) {
+                onContinue();
+            }
+        });
+
+        cancelBtn.addEventListener('click', () => {
+            closeModal();
+        });
+
+        // Закрытие по клику вне модального окна
+        instructionsModal.addEventListener('click', (e) => {
+            if (e.target === instructionsModal) {
+                closeModal();
+            }
+        });
+    }
+
+    async function startPhotoSync() {
+        try {
+            showToast('⏳ Создание сессии синхронизации...', 2000, '#007acc');
+            
+            // Создаем сессию на сервере
+            const response = await fetch(`${SYNC_SERVER_URL}/start`);
+            if (!response.ok) {
+                throw new Error('Не удалось создать сессию. Убедитесь, что сервер запущен.');
+            }
+            
+            const data = await response.json();
+            syncToken = data.token;
+            console.log('[PhotoSync] Session data:', data);
+            
+            // Проверка: если URL содержит localhost, Android устройство не сможет подключиться
+            if (data.url && (data.url.includes('localhost') || data.url.includes('127.0.0.1'))) {
+                console.error('[PhotoSync] ERROR: URL contains localhost! Android device cannot connect. URL:', data.url);
+                console.log('[PhotoSync] Using localIP instead:', data.localIP);
+                // Исправляем URL, используя localIP вместо localhost
+                if (data.localIP && data.localIP !== 'localhost') {
+                    data.url = data.url.replace(/localhost|127\.0\.0\.1/, data.localIP);
+                    console.log('[PhotoSync] Fixed URL:', data.url);
+                } else {
+                    showToast('❌ Ошибка: Сервер вернул localhost. Проверьте, что сервер запущен и доступен в сети.', 5000, '#a33');
+                    return;
+                }
+            }
+            
+            // Показываем модальное окно с QR-кодом
+            showSyncModal(data);
+            
+            // Начинаем опрос статуса
+            startStatusPolling();
+            
+        } catch (error) {
+            console.error('[PhotoSync] Ошибка:', error);
+            showToast(`❌ Ошибка: ${error.message}`, 5000, '#a33');
+        }
+    }
+
+    function showSyncModal(sessionData) {
+        // Удаляем старое модальное окно, если есть
+        if (syncModal) {
+            syncModal.remove();
+        }
+
+        syncModal = document.createElement('div');
+        syncModal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.7);
+            z-index: 9999999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        `;
+
+        const modalContent = document.createElement('div');
+        modalContent.style.cssText = `
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            max-width: 500px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+        `;
+
+        // Проверяем, что IP адрес не localhost (для QR-кода нужен реальный IP)
+        if (sessionData.localIP && (sessionData.localIP === 'localhost' || sessionData.localIP === '127.0.0.1')) {
+            console.error('[PhotoSync] ERROR: localIP is localhost!', sessionData);
+            showToast('❌ Ошибка: Сервер вернул localhost. Проверьте сетевые настройки.', 5000, '#a33');
+            return;
+        }
+        
+        // Минимальный формат QR-кода с короткими ключами (без url - он строится на клиенте)
+        const qrData = JSON.stringify({
+            t: sessionData.token,
+            ip: sessionData.localIP,
+            p: sessionData.port
+        });
+
+        modalContent.innerHTML = `
+            <h2 style="margin-top:0;">Синхронизация фото</h2>
+            <p>Просканируйте QR-код через приложение MeterSync</p>
+            <div id="qrCodeContainer" style="text-align:center; margin:20px 0;">
+                <canvas id="qrCanvas" style="max-width:100%;"></canvas>
+            </div>
+            <div style="margin:15px 0; padding:10px; background:#f5f5f5; border-radius:5px;">
+                <strong>Или введите токен вручную:</strong><br>
+                <code style="word-break:break-all; font-size:12px;">${sessionData.token}</code>
+            </div>
+            <div style="margin:15px 0;">
+                <strong>IP адрес:</strong> ${sessionData.localIP}:${sessionData.port}
+            </div>
+            <div id="syncProgress" style="display:none; margin:15px 0;">
+                <div style="margin-bottom:10px;">
+                    <strong>Статус:</strong> <span id="syncStatusText">Ожидание подключения...</span>
+                </div>
+                <div style="margin-bottom:10px;">
+                    <strong>Прогресс:</strong> <span id="syncProgressText">0 / 0</span>
+                </div>
+                <div style="width:100%; height:20px; background:#f0f0f0; border-radius:10px; overflow:hidden;">
+                    <div id="syncProgressBar" style="height:100%; background:#9C27B0; width:0%; transition:width 0.3s;"></div>
+                </div>
+                <div style="margin-top:10px; font-size:12px; color:#666;">
+                    <span id="syncDetails"></span>
+                </div>
+            </div>
+            <button id="closeSyncModal" style="
+                width:100%;
+                padding:10px;
+                background:#666;
+                color:white;
+                border:none;
+                border-radius:5px;
+                cursor:pointer;
+                margin-top:10px;
+            ">Закрыть</button>
+        `;
+
+        syncModal.appendChild(modalContent);
+        document.body.appendChild(syncModal);
+
+        // Генерируем QR-код
+        const canvas = document.getElementById('qrCanvas');
+        if (canvas) {
+            generateQRCode(qrData, canvas);
+        } else {
+            console.error('[PhotoSync] Canvas element not found');
+        }
+
+        // Обработчик закрытия
+        document.getElementById('closeSyncModal').addEventListener('click', () => {
+            stopStatusPolling();
+            if (syncModal) {
+                syncModal.remove();
+                syncModal = null;
+            }
+        });
+
+        // Показываем прогресс
+        document.getElementById('syncProgress').style.display = 'block';
+    }
+
+    function generateQRCode(data, canvas) {
+        // Функция для использования библиотеки, если она доступна
+        function useQRCodeLibrary() {
+            // Проверяем библиотеку qrcode (npm) - API: QRCode.toCanvas()
+            if (typeof QRCode !== 'undefined' && QRCode.toCanvas) {
+                QRCode.toCanvas(canvas, data, { width: 300 }, (error) => {
+                    if (error) {
+                        console.error('Ошибка генерации QR-кода:', error);
+                        canvas.parentElement.innerHTML = '<p style="color:red;">Ошибка генерации QR-кода: ' + error.message + '</p>';
+                    }
+                });
+                return true;
+            }
+            // Проверяем библиотеку qrcodejs (davidshimjs) - API: new QRCode(element, options)
+            if (typeof QRCode !== 'undefined' && typeof QRCode === 'function') {
+                try {
+                    // Устанавливаем размеры canvas (и внутренние, и CSS)
+                    canvas.width = 300;
+                    canvas.height = 300;
+                    canvas.style.width = '300px';
+                    canvas.style.height = '300px';
+                    canvas.style.display = 'block';
+                    canvas.style.margin = '0 auto';
+                    
+                    // qrcodejs требует элемент DOM, создаем временный div
+                    const tempDiv = document.createElement('div');
+                    tempDiv.style.position = 'absolute';
+                    tempDiv.style.left = '-9999px';
+                    tempDiv.style.top = '-9999px';
+                    tempDiv.style.width = '300px';
+                    tempDiv.style.height = '300px';
+                    document.body.appendChild(tempDiv);
+                    
+                    // Создаем QR-код в временном элементе
+                    const qr = new QRCode(tempDiv, {
+                        text: data,
+                        width: 300,
+                        height: 300,
+                        colorDark: '#000000',
+                        colorLight: '#ffffff',
+                        correctLevel: QRCode.CorrectLevel.H
+                    });
+                    
+                    // Копируем изображение на canvas (qrcodejs создает img элемент)
+                    const checkForImage = (attempts = 0) => {
+                        const img = tempDiv.querySelector('img');
+                        
+                        if (img) {
+                            const ctx = canvas.getContext('2d');
+                            
+                            const drawImageToCanvas = () => {
+                                try {
+                                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                                    ctx.drawImage(img, 0, 0, 300, 300);
+                                    document.body.removeChild(tempDiv);
+                                } catch (error) {
+                                    console.error('Ошибка копирования изображения на canvas:', error);
+                                    document.body.removeChild(tempDiv);
+                                    canvas.parentElement.innerHTML = '<p style="color:red;">Ошибка отображения QR-кода</p>';
+                                }
+                            };
+                            
+                            if (img.complete && img.naturalWidth > 0) {
+                                // Изображение уже загружено
+                                drawImageToCanvas();
+                            } else {
+                                // Ждем загрузки изображения
+                                img.onload = () => {
+                                    drawImageToCanvas();
+                                };
+                                img.onerror = () => {
+                                    document.body.removeChild(tempDiv);
+                                    canvas.parentElement.innerHTML = '<p style="color:red;">Ошибка загрузки изображения QR-кода</p>';
+                                };
+                            }
+                        } else if (attempts < 30) {
+                            // Ждем создания изображения (qrcodejs создает его асинхронно)
+                            setTimeout(() => checkForImage(attempts + 1), 50);
+                        } else {
+                            document.body.removeChild(tempDiv);
+                            canvas.parentElement.innerHTML = '<p style="color:red;">Таймаут генерации QR-кода</p>';
+                        }
+                    };
+                    checkForImage();
+                    
+                    return true;
+                } catch (error) {
+                    console.error('Ошибка генерации QR-кода через qrcodejs:', error);
+                    return false;
+                }
+            }
+            return false;
+        }
+        
+        // Проверяем, доступна ли библиотека сразу
+        if (useQRCodeLibrary()) {
+            return;
+        }
+        
+        // Ждем немного, возможно внешние модули еще загружаются
+        let waitAttempts = 0;
+        const maxWaitAttempts = 10; // 1 секунда максимум
+        
+        function waitForExternalModules() {
+            if (useQRCodeLibrary()) {
+                return; // Библиотека найдена!
+            }
+            
+            waitAttempts++;
+            if (waitAttempts < maxWaitAttempts) {
+                setTimeout(waitForExternalModules, 100);
+            } else {
+                // Внешние модули не загрузились, пробуем CDN
+                loadFromCDN();
+            }
+        }
+        
+        // Пробуем загрузить библиотеку с нескольких CDN (fallback)
+        function loadFromCDN() {
+            // CDN URLs для библиотеки qrcodejs (браузерная версия)
+            // Библиотека qrcode npm не имеет готовой браузерной сборки
+            // Используем qrcodejs от davidshimjs - специально для браузера
+            const cdnUrls = [
+                // Рабочий CDN для qrcodejs
+                'https://cdn.jsdelivr.net/gh/davidshimjs/qrcodejs/qrcode.min.js',
+                // Альтернативный CDN
+                'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js',
+                // Еще один вариант
+                'https://unpkg.com/qrcodejs@1.0.0/qrcode.min.js'
+            ];
+            
+            let currentCdnIndex = 0;
+            
+            function tryLoadNext() {
+                if (currentCdnIndex >= cdnUrls.length) {
+                    // Все CDN недоступны - показываем текст вместо QR-кода с инструкцией
+                    canvas.parentElement.innerHTML = `
+                        <div style="padding:20px; background:#f5f5f5; border-radius:5px;">
+                            <p style="margin:0 0 10px 0; color:#666; font-weight:bold;">QR-код недоступен. Используйте ручной ввод токена ниже.</p>
+                            <p style="margin:10px 0; font-size:13px; color:#333;">Для работы QR-кода добавьте библиотеку в раздел "Внешние модули":</p>
+                            <div style="background:#fff; padding:10px; border-radius:4px; margin:10px 0; font-family:monospace; font-size:12px;">
+                                <div style="margin:5px 0;"><strong>Название:</strong> QRCode</div>
+                                <div style="margin:5px 0;"><strong>URL:</strong> https://cdn.jsdelivr.net/gh/davidshimjs/qrcodejs/qrcode.min.js</div>
+                            </div>
+                            <p style="margin:5px 0; font-size:11px; color:#666;">Примечание: Используйте библиотеку qrcodejs (не qrcode npm), так как она предназначена для браузера.</p>
+                            <p style="margin:10px 0 0 0; font-size:12px; color:#999;">После добавления перезагрузите страницу.</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                const cdnUrl = cdnUrls[currentCdnIndex];
+                
+                const script = document.createElement('script');
+                script.src = cdnUrl;
+                script.crossOrigin = 'anonymous';
+                
+                script.onload = () => {
+                    // Проверяем, что QRCode действительно доступен
+                    if (useQRCodeLibrary()) {
+                        return; // Успешно!
+                    } else {
+                        // Библиотека загрузилась, но QRCode не определен - пробуем следующий CDN
+                        currentCdnIndex++;
+                        tryLoadNext();
+                    }
+                };
+                
+                script.onerror = (err) => {
+                    console.warn(`[PhotoSync] Failed to load QRCode from CDN ${currentCdnIndex + 1} (${cdnUrl}), trying next...`);
+                    currentCdnIndex++;
+                    tryLoadNext();
+                };
+                
+                document.head.appendChild(script);
+            }
+            
+            tryLoadNext();
+        }
+        
+        // Сначала ждем внешние модули, потом пробуем CDN
+        waitForExternalModules();
+    }
+
+    function startStatusPolling() {
+        if (syncStatusInterval) {
+            clearInterval(syncStatusInterval);
+        }
+
+        syncStatusInterval = setInterval(async () => {
+            if (!syncToken) return;
+
+            try {
+                const response = await fetch(`${SYNC_SERVER_URL}/status?token=${syncToken}`);
+                if (!response.ok) {
+                    throw new Error('Не удалось получить статус');
+                }
+
+                const status = await response.json();
+                updateSyncProgress(status);
+
+                // Если синхронизация завершена или произошла ошибка, останавливаем опрос
+                if (status.status === 'completed' || status.status === 'error') {
+                    // Если синхронизация завершена, загружаем актуальный индекс с сервера
+                    if (status.status === 'completed') {
+                        try {
+                            const indexResponse = await fetch(`${SYNC_SERVER_URL}/index`);
+                            if (indexResponse.ok) {
+                                const serverIndex = await indexResponse.json();
+                                localStorage.setItem(SERVER_INDEX_KEY, JSON.stringify(serverIndex));
+                                window._savedServerIndex = serverIndex;
+                                console.log('[AutoPhotoUpload] Индекс обновлен после синхронизации:', Object.keys(serverIndex).length, 'счетчиков');
+                            }
+                        } catch (error) {
+                            console.warn('[AutoPhotoUpload] Не удалось загрузить индекс после синхронизации:', error);
+                        }
+                        showToast(`✅ Синхронизация завершена! Загружено: ${status.uploaded}, Пропущено: ${status.skipped}`, 5000, '#2a7');
+                    }
+                    stopStatusPolling();
+                }
+            } catch (error) {
+                console.error('[PhotoSync] Ошибка опроса статуса:', error);
+            }
+        }, 1000); // Опрашиваем каждую секунду
+    }
+
+    function stopStatusPolling() {
+        if (syncStatusInterval) {
+            clearInterval(syncStatusInterval);
+            syncStatusInterval = null;
+        }
+    }
+
+    function updateSyncProgress(status) {
+        if (!syncModal) return;
+
+        const statusText = syncModal.querySelector('#syncStatusText');
+        const progressText = syncModal.querySelector('#syncProgressText');
+        const progressBar = syncModal.querySelector('#syncProgressBar');
+        const details = syncModal.querySelector('#syncDetails');
+
+        if (statusText) {
+            const statusMap = {
+                'waiting': 'Ожидание подключения...',
+                'ready': 'Готов к синхронизации',
+                'syncing': 'Синхронизация...',
+                'completed': 'Завершено',
+                'error': 'Ошибка'
+            };
+            statusText.textContent = statusMap[status.status] || status.status;
+        }
+
+        if (progressText) {
+            progressText.textContent = `${status.uploaded + status.skipped} / ${status.total}`;
+        }
+
+        if (progressBar) {
+            const progress = status.total > 0 ? (status.uploaded + status.skipped) / status.total * 100 : 0;
+            progressBar.style.width = `${progress}%`;
+        }
+
+        if (details) {
+            let detailsText = `Загружено: ${status.uploaded}`;
+            if (status.skipped > 0) {
+                detailsText += ` | Пропущено дубликатов: ${status.skipped}`;
+            }
+            if (status.currentFile) {
+                detailsText += `<br>Текущий файл: ${status.currentFile}`;
+            }
+            if (status.estimatedTimeRemaining > 0) {
+                const minutes = Math.floor(status.estimatedTimeRemaining / 60);
+                const seconds = status.estimatedTimeRemaining % 60;
+                detailsText += `<br>Осталось: ~${minutes}м ${seconds}с`;
+            }
+            details.innerHTML = detailsText;
+        }
+    }
+
+    // ===== Регистрация секции в менеджере =====
+    function waitForManager() {
+        return new Promise((resolve) => {
+            if (window.meterScriptsPanelManager) {
+                resolve();
+                return;
+            }
+            const checkInterval = setInterval(() => {
+                if (window.meterScriptsPanelManager) {
+                    clearInterval(checkInterval);
+                    resolve();
+                }
+            }, 100);
+            setTimeout(() => {
+                clearInterval(checkInterval);
+                if (!window.meterScriptsPanelManager) {
+                    console.error('Менеджер общей панели настроек не найден.');
+                }
+                resolve();
+            }, 5000);
+        });
+    }
+
+    // ===== Восстановление доступа при загрузке страницы =====
+    let directoryRestorePromise = null;
+    
+    async function initializeOnLoad() {
+        // Восстанавливаем индекс из кеша
+        if (photosCache.files && photosCache.files.length > 0) {
+            window._photoIndex = buildPhotoIndex();
+        }
+        
+        // Восстанавливаем сохраненный индекс с сервера
+        try {
+            const savedIndexStr = localStorage.getItem(SERVER_INDEX_KEY);
+            if (savedIndexStr) {
+                window._savedServerIndex = JSON.parse(savedIndexStr);
+                console.log('[AutoPhotoUpload] Восстановлен сохраненный индекс:', Object.keys(window._savedServerIndex).length, 'счетчиков');
+            }
+        } catch (error) {
+            console.warn('[AutoPhotoUpload] Не удалось восстановить сохраненный индекс:', error);
+        }
+        
+        // Пробуем восстановить доступ к директории через IndexedDB
+        if (photosDirectory && enabled) {
+            directoryRestorePromise = restoreDirectoryAccess();
+            await directoryRestorePromise;
+            
+            // Если есть handle директории, пробуем загрузить индекс из файла (если он обновился)
+            if (window._photoDirectoryHandle) {
+                await loadIndexFromDirectory(window._photoDirectoryHandle);
+            }
+        }
+    }
+    
+    // Функция для ожидания восстановления директории
+    async function waitForDirectoryRestore() {
+        if (directoryRestorePromise) {
+            await directoryRestorePromise;
+        }
+        // Дополнительная проверка - если handle еще не восстановлен, пробуем еще раз
+        if (!window._photoDirectoryHandle && photosDirectory && enabled) {
+            await restoreDirectoryAccess();
+        }
+    }
+
+    waitForManager().then(() => {
+        if (!window.meterScriptsPanelManager) return;
+
+        const sectionHtml = `
+            <div style="margin-bottom:10px;">
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                    <input type="checkbox" id="autoPhotoUploadEnabled" ${enabled ? 'checked' : ''}>
+                    <span>ВКЛ/ВЫКЛ</span>
+                </label>
+            </div>
+            <div style="margin-bottom:10px;">
+                <button id="selectPhotosDirBtn" style="
+                    width:100%;
+                    padding:6px;
+                    background:#007acc;
+                    color:white;
+                    border:none;
+                    border-radius:5px;
+                    cursor:pointer;
+                    font-size:12px;
+                ">Выбрать директорию с фото</button>
+            </div>
+            <div id="photosDirInfo" style="
+                font-size:11px;
+                color:#666;
+                margin-top:5px;
+                padding:5px;
+                background:#f5f5f5;
+                border-radius:3px;
+            ">
+                ${photosDirectory ? `Директория: ${photosDirectory}<br>Фото в кеше: ${photosCache.files ? photosCache.files.length : 0}` : 'Директория не выбрана'}
+            </div>
+            <div style="margin-top:10px; padding-top:10px; border-top:1px solid #ddd;">
+                <button id="syncPhotosBtn" style="
+                    width:100%;
+                    padding:6px;
+                    background:#9C27B0;
+                    color:white;
+                    border:none;
+                    border-radius:5px;
+                    cursor:pointer;
+                    font-size:12px;
+                    font-weight:bold;
+                ">📱 Синхронизация фото</button>
+            </div>
+        `;
+
+        window.meterScriptsPanelManager.registerSection('autophotoupload', 'Автозагрузка фото', sectionHtml, {
+            onRender: (container) => {
+                const enabledCheckbox = container.querySelector('#autoPhotoUploadEnabled');
+                const selectDirBtn = container.querySelector('#selectPhotosDirBtn');
+                const dirInfo = container.querySelector('#photosDirInfo');
+
+                enabledCheckbox.addEventListener('change', (e) => {
+                    enabled = e.target.checked;
+                    localStorage.setItem(CONFIG_KEY, JSON.stringify({ enabled, photosDirectory }));
+                    if (enabled) {
+                        showToast('✅ Автозагрузка фото включена', 2000, '#2a7');
+                    } else {
+                        showToast('⏸️ Автозагрузка фото выключена', 2000, '#666');
+                    }
+                });
+
+                selectDirBtn.addEventListener('click', async () => {
+                    selectDirBtn.disabled = true;
+                    selectDirBtn.textContent = 'Обработка...';
+                    
+                    const photos = await selectPhotosDirectory();
+                    
+                    selectDirBtn.disabled = false;
+                    selectDirBtn.textContent = 'Выбрать директорию с фото';
+                    
+                    if (photos && photos.length > 0) {
+                        dirInfo.innerHTML = `
+                            Директория: ${photosDirectory}<br>
+                            Фото в кеше: ${photos.length}
+                        `;
+                    }
+                });
+
+                // Кнопка синхронизации фото
+                const syncBtn = container.querySelector('#syncPhotosBtn');
+                syncBtn.addEventListener('click', () => {
+                    // Проверяем, нужно ли показывать инструкцию
+                    const instructionsShown = localStorage.getItem(INSTRUCTIONS_KEY) === 'true';
+                    if (!instructionsShown) {
+                        showSyncInstructionsModal(() => {
+                            // Callback вызывается после нажатия "Понятно"
+                            startPhotoSync();
+                        });
+                    } else {
+                        startPhotoSync();
+                    }
+                });
+            }
+        });
+        
+        // Инициализируем при загрузке страницы
+        initializeOnLoad();
+    });
+
+    // ===== Наблюдатель за появлением поля загрузки =====
+    let lastProcessedCounterNumber = null;
+    let processingTimeout = null;
+    
+    const observer = new MutationObserver((mutations) => {
+        const container = document.querySelector(CONTAINER_SELECTOR);
+        if (container && enabled) {
+            // Очищаем кеш номера счетчика, если контейнер изменился
+            // (чтобы не использовать устаревшие данные)
+            if (cachedCounterElement && !document.contains(cachedCounterElement)) {
+                cachedCounterNumber = null;
+                cachedCounterElement = null;
+            }
+            
+            // Проверяем номер счетчика сразу (без задержки)
+            const counterNumber = findCounterNumber();
+            
+            // Если номер счетчика изменился или еще не обрабатывали
+            if (counterNumber && counterNumber !== lastProcessedCounterNumber) {
+                // Отменяем предыдущий таймаут, если он есть
+                if (processingTimeout) {
+                    clearTimeout(processingTimeout);
+                }
+                
+                lastProcessedCounterNumber = counterNumber;
+                window._autoPhotoUploadActive = true;
+                
+                // Минимальная задержка только для восстановления handle директории
+                // (если он еще не восстановлен)
+                processingTimeout = setTimeout(async () => {
+                    // Убеждаемся, что директория восстановлена перед автозагрузкой
+                    await waitForDirectoryRestore();
+                    
+                    // Передаем номер счетчика как параметр, чтобы не искать его повторно
+                    autoUploadPhotos(counterNumber).catch(err => {
+                        console.error('[AutoPhotoUpload] Ошибка:', err);
+                        showToast(`❌ Ошибка автозагрузки: ${err.message}`, 5000, '#a33');
+                    }).finally(() => {
+                        // Сбрасываем флаг через некоторое время, чтобы можно было обработать тот же счетчик снова при необходимости
+                        setTimeout(() => {
+                            window._autoPhotoUploadActive = false;
+                        }, 5000);
+                    });
+                }, 100); // Минимальная задержка - только для восстановления handle
+            }
+        }
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    // Проверяем при загрузке страницы
+    if (document.querySelector(CONTAINER_SELECTOR) && enabled) {
+        // Сначала инициализируем восстановление директории
+        initializeOnLoad().then(async () => {
+            // Минимальная задержка для восстановления handle директории
+            await waitForDirectoryRestore();
+            
+            // Проверяем номер счетчика сразу (без дополнительной задержки)
+            const counterNumber = findCounterNumber();
+            if (counterNumber) {
+                lastProcessedCounterNumber = counterNumber;
+                // Передаем номер счетчика как параметр
+                autoUploadPhotos(counterNumber).catch(err => {
+                    console.error('[AutoPhotoUpload] Ошибка:', err);
+                });
+            }
+        });
+    }
+})();
+

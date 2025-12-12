@@ -1,0 +1,66 @@
+// @description  Автоматическая обработка перетаскивания фото на страницу — без горячих клавиш и окошек
+
+(() => {
+    const CONTAINER_SELECTOR = 'div._photoField_vvuiq_1';
+
+    // Получаем реальный input сайта
+    const getSiteFileInput = () => {
+        const container = document.querySelector(CONTAINER_SELECTOR);
+        if (!container) return null;
+        // Ищем input с атрибутом multiple для множественной загрузки
+        return container.querySelector('input[type="file"][multiple]') || 
+               container.querySelector('input[type="file"]');
+    };
+
+    // Устанавливаем файлы в input
+    const populateSiteInput = (files) => {
+        const siteInput = getSiteFileInput();
+        if (!siteInput) return false;
+        const dt = new DataTransfer();
+        files.forEach(f => dt.items.add(f));
+        siteInput.files = dt.files;
+        siteInput.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+    };
+
+    // Следим за появлением блока фото (например, если страница динамическая)
+    const observer = new MutationObserver(() => {
+        const container = document.querySelector(CONTAINER_SELECTOR);
+        if (container && !window._photoUploaderActive) {
+            window._photoUploaderActive = true;
+            enableGlobalDrop();
+        }
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    // Подключаем глобальный drag-and-drop
+    function enableGlobalDrop() {
+        document.addEventListener('dragover', e => {
+            if (e.dataTransfer.types.includes('Files')) {
+                e.preventDefault();
+            }
+        });
+
+        document.addEventListener('drop', e => {
+            const container = document.querySelector(CONTAINER_SELECTOR);
+            if (!container) return; // нет блока — ничего не делаем
+
+            e.preventDefault();
+            const files = Array.from(e.dataTransfer.files)
+                .filter(f => f.type.startsWith('image/'));
+            if (files.length === 0) return;
+
+            const ok = populateSiteInput(files);
+            if (ok) console.log(`[Uploader] Загружено ${files.length} фото.`);
+        });
+
+        console.log('[Uploader] Глобальный drag-and-drop активирован.');
+    }
+
+    // Если блок уже есть при загрузке — активируем сразу
+    if (document.querySelector(CONTAINER_SELECTOR)) {
+        window._photoUploaderActive = true;
+        enableGlobalDrop();
+    }
+})();

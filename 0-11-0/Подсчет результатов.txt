@@ -1,0 +1,379 @@
+// Скрипт "Подсчет результатов.txt"
+(() => {
+  'use strict';
+
+  // ===== Настройки =====
+  const resultsKey = 'count_results';
+  
+  // Загружаем сохраненные результаты из localStorage
+  const savedResults = JSON.parse(localStorage.getItem(resultsKey) || '{}');
+  let totalCounters = savedResults.totalCounters || 0;
+  let loadedCounters = savedResults.loadedCounters || 0;
+
+  // ===== Регистрация секции в общей панели =====
+  // Ждем, пока менеджер будет загружен
+  function waitForManager() {
+    return new Promise((resolve) => {
+      if (window.meterScriptsPanelManager) {
+        resolve();
+        return;
+      }
+      const checkInterval = setInterval(() => {
+        if (window.meterScriptsPanelManager) {
+          clearInterval(checkInterval);
+          resolve();
+        }
+      }, 100);
+      // Таймаут на случай, если менеджер не загрузится
+      setTimeout(() => {
+        clearInterval(checkInterval);
+        if (!window.meterScriptsPanelManager) {
+          console.error('Менеджер общей панели настроек не найден. Убедитесь, что скрипт "Менеджер общей панели настроек.txt" загружен первым.');
+        }
+        resolve();
+      }, 5000);
+    });
+  }
+
+  waitForManager().then(() => {
+    if (!window.meterScriptsPanelManager) return;
+
+    const sectionHtml = `
+      <div style="margin-bottom:8px;">
+        <label style="display:block; margin-bottom:4px;">
+          Счетчиков всего: <span id="totalCountersDisplay" style="font-weight:bold;">0</span>
+        </label>
+      </div>
+      <div style="margin-bottom:12px;">
+        <label style="display:block; margin-bottom:4px;">
+          Загружено счетчиков: <span id="loadedCountersDisplay" style="font-weight:bold;">0</span>
+        </label>
+      </div>
+      <button id="countAllBtn" style="width:100%; padding:8px; background:#007acc; color:white; border:none; border-radius:5px; cursor:pointer; font-size:13px; font-weight:bold;">
+        Подсчет всех счетчиков
+      </button>
+    `;
+
+    window.meterScriptsPanelManager.registerSection('count', 'Подсчет результатов', sectionHtml, {
+      onRender: (container) => {
+        const totalCountersDisplay = container.querySelector('#totalCountersDisplay');
+        const loadedCountersDisplay = container.querySelector('#loadedCountersDisplay');
+        const countAllBtn = container.querySelector('#countAllBtn');
+
+        // ===== Обновление отображения =====
+        function updateDisplay() {
+          totalCountersDisplay.textContent = totalCounters;
+          loadedCountersDisplay.textContent = loadedCounters;
+          // Сохраняем результаты в localStorage
+          localStorage.setItem(resultsKey, JSON.stringify({
+            totalCounters: totalCounters,
+            loadedCounters: loadedCounters
+          }));
+        }
+
+        // Инициализируем отображение
+        updateDisplay();
+
+        // ===== Утилиты =====
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+        function showToast(text, time = 7000, color = '#333') {
+          let toastContainer = document.getElementById('toast-container');
+    if (!toastContainer) {
+      toastContainer = document.createElement('div');
+      toastContainer.id = 'toast-container';
+      Object.assign(toastContainer.style, {
+        position: 'fixed',
+        bottom: '20px',
+        right: '20px',
+        zIndex: '999999',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '10px',
+        pointerEvents: 'none',
+        alignItems: 'flex-end'
+      });
+      document.body.appendChild(toastContainer);
+    }
+
+    const toast = document.createElement('div');
+    toast.textContent = text;
+    Object.assign(toast.style, {
+      background: color,
+      color: '#fff',
+      padding: '10px 20px',
+      borderRadius: '10px',
+      fontSize: '14px',
+      opacity: '0',
+      pointerEvents: 'none',
+      fontFamily: 'sans-serif',
+      transition: 'opacity 0.3s ease, transform 0.3s ease',
+      transform: 'translateY(10px)',
+      maxWidth: '400px',
+      wordWrap: 'break-word',
+      whiteSpace: 'normal'
+    });
+
+    toastContainer.appendChild(toast);
+
+    setTimeout(() => {
+      toast.style.opacity = '0.95';
+      toast.style.transform = 'translateY(0)';
+    }, 10);
+
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(-10px)';
+      setTimeout(() => {
+        if (toast.parentNode) {
+          toast.remove();
+        }
+        if (toastContainer.children.length === 0) {
+          toastContainer.remove();
+        }
+      }, 300);
+    }, time);
+  }
+
+        async function waitForSelector(selector, timeout = 10000) {
+          const start = Date.now();
+          while (Date.now() - start < timeout) {
+            const el = document.querySelector(selector);
+            if (el) return el;
+            await wait(100);
+          }
+          return null;
+        }
+
+        // ===== Функция подсчета счетчиков =====
+        async function countAllCounters() {
+          try {
+      // Переход на главную страницу
+      if (window.location.href !== 'https://meter.printecs.com/') {
+        window.location.href = 'https://meter.printecs.com/';
+        await wait(2000); // Ждем начала загрузки
+      }
+
+      // Ждем загрузки адресов
+      showToast('⏳ Ожидание загрузки адресов...', 3000, '#555');
+      const addressesContainer = await waitForSelector('div._tasksContainer_36r29_11', 30000);
+      
+      if (!addressesContainer) {
+        showToast('❌ Не удалось загрузить список адресов', 5000, '#a33');
+        return;
+      }
+
+      // Находим все адреса
+      // Адреса находятся в div._taskItem_36r29_38 и имеют span внутри _taskTitle_36r29_45
+      await wait(1000); // Дополнительная задержка для полной загрузки
+      
+      // Функция для получения списка адресов
+      function getAddressesList() {
+        const allAddressItems = document.querySelectorAll('div._taskItem_36r29_38');
+        const addresses = [];
+        
+        // Фильтруем адреса: те, у которых в _taskTitle_36r29_45 есть span (это адреса, а не квартиры)
+        allAddressItems.forEach(item => {
+          const titleElement = item.querySelector('div._taskTitle_36r29_45');
+          if (titleElement) {
+            const span = titleElement.querySelector('span');
+            // Если есть span, это адрес (не квартира)
+            if (span) {
+              const addressTitle = span.textContent.trim();
+              addresses.push({ element: item, title: addressTitle });
+            }
+          }
+        });
+        
+        return addresses;
+      }
+
+      // Получаем список адресов с их текстами
+      let addressesList = getAddressesList();
+
+      if (addressesList.length === 0) {
+        showToast('❌ Адреса не найдены', 5000, '#a33');
+        return;
+      }
+
+      showToast(`📋 Найдено адресов: ${addressesList.length}`, 3000, '#555');
+
+      totalCounters = 0;
+      loadedCounters = 0;
+      updateDisplay();
+
+      // Обрабатываем каждый адрес
+      for (let i = 0; i < addressesList.length; i++) {
+        const addressInfo = addressesList[i];
+        const addressTitle = addressInfo.title;
+        
+        showToast(`📍 Обработка ${i + 1}/${addressesList.length}: ${addressTitle}`, 2000, '#555');
+        
+        // После возврата к списку адресов нужно пересобрать список
+        // Находим элемент адреса по тексту
+        const currentAddresses = getAddressesList();
+        const currentAddress = currentAddresses.find(addr => addr.title === addressTitle);
+        
+        if (!currentAddress) {
+          showToast(`⚠️ Адрес "${addressTitle}" не найден в списке`, 3000, '#a33');
+          continue;
+        }
+        
+        // Кликаем на адрес
+        currentAddress.element.click();
+        await wait(1500); // Ждем загрузки квартир
+
+        // Ждем появления списка квартир
+        const apartmentsContainer = await waitForSelector('div._tasksContainer_36r29_11', 5000);
+        if (!apartmentsContainer) {
+          showToast(`⚠️ Не удалось загрузить квартиры для ${addressTitle}`, 3000, '#a33');
+          continue;
+        }
+
+        // Считаем все квартиры (все элементы _taskItem_36r29_38, которые НЕ содержат span в _taskTitle_36r29_45)
+        await wait(500); // Дополнительная задержка
+        const allItems = document.querySelectorAll('div._taskItem_36r29_38');
+        let apartmentCount = 0;
+        let loadedCount = 0;
+
+        allItems.forEach(item => {
+          const titleElement = item.querySelector('div._taskTitle_36r29_45');
+          if (titleElement) {
+            const span = titleElement.querySelector('span');
+            // Если нет span, это квартира (не адрес)
+            if (!span) {
+              apartmentCount++;
+              
+              // Проверяем, загружен ли счетчик (зеленый значок)
+              const statusElement = item.querySelector('div._taskStatus_36r29_56 svg');
+              if (statusElement) {
+                // Проверяем атрибут color
+                const colorAttr = statusElement.getAttribute('color');
+                // Проверяем inline стиль
+                const styleColor = statusElement.style.color || '';
+                // Зеленый цвет: #95CAB4 или rgb(149, 202, 180)
+                if (colorAttr === '#95CAB4' || 
+                    colorAttr === 'rgb(149, 202, 180)' || 
+                    styleColor === '#95CAB4' || 
+                    styleColor === 'rgb(149, 202, 180)' ||
+                    styleColor.includes('149, 202, 180')) {
+                  loadedCount++;
+                }
+              }
+            }
+          }
+        });
+
+        totalCounters += apartmentCount;
+        loadedCounters += loadedCount;
+        updateDisplay();
+
+        // Возвращаемся назад к списку адресов
+        // Пробуем найти кнопку "назад" с классом _leftControl_tcg9l_49
+        const backButton = document.querySelector('div._leftControl_tcg9l_49');
+        if (backButton) {
+          backButton.click();
+          await wait(1500); // Увеличена задержка для полной загрузки списка адресов
+        } else {
+          // Альтернативный способ: ищем кнопку "Задачи" с классом _navItem_snyxi_40
+          const tasksButton = Array.from(document.querySelectorAll('div._navItem_snyxi_40'))
+            .find(el => {
+              const label = el.querySelector('label');
+              return label && label.textContent.trim() === 'Задачи';
+            });
+          if (tasksButton) {
+            tasksButton.click();
+            await wait(1500); // Увеличена задержка для полной загрузки списка адресов
+          } else {
+            // Если не нашли кнопки, показываем предупреждение и продолжаем
+            showToast(`⚠️ Не удалось вернуться к списку адресов для ${addressTitle}`, 3000, '#a33');
+            // Пробуем вернуться на главную страницу
+            window.location.href = 'https://meter.printecs.com/';
+            await wait(2000);
+            // После перезагрузки нужно будет перезапустить подсчет
+            showToast('⚠️ Требуется перезапуск подсчета', 5000, '#a33');
+            return;
+          }
+        }
+        
+        // Ждем, пока список адресов загрузится
+        await waitForSelector('div._tasksContainer_36r29_11', 5000);
+        await wait(500); // Дополнительная задержка для стабилизации DOM
+      }
+
+      showToast(`✅ Подсчет завершен! Всего: ${totalCounters}, Загружено: ${loadedCounters}`, 7000, '#2a7');
+      
+    } catch (error) {
+      showToast(`❌ Ошибка: ${error.message}`, 5000, '#a33');
+    }
+  }
+
+        // ===== Модальное окно подтверждения =====
+        function showConfirmationModal() {
+          const modal = document.createElement('div');
+    modal.style.cssText = `
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.6);
+      z-index: 1000000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    `;
+    
+    const modalContent = document.createElement('div');
+    modalContent.style.cssText = `
+      background: white;
+      padding: 30px;
+      border-radius: 15px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+      font-family: sans-serif;
+      min-width: 300px;
+      max-width: 500px;
+    `;
+    
+    modalContent.innerHTML = `
+      <h3 style="margin-top:0; margin-bottom:15px;">Подтверждение</h3>
+      <p style="margin-bottom:20px; line-height:1.5;">
+        Процесс подсчета всех счетчиков может занять некоторое время. 
+        Скрипт будет последовательно открывать каждый адрес и подсчитывать квартиры.
+      </p>
+      <div style="display:flex; gap:10px; justify-content:flex-end;">
+        <button id="cancelCountBtn" style="padding:8px 20px; background:#6c757d; color:white; border:none; border-radius:5px; cursor:pointer; font-size:13px;">
+          Отказаться
+        </button>
+        <button id="confirmCountBtn" style="padding:8px 20px; background:#007acc; color:white; border:none; border-radius:5px; cursor:pointer; font-size:13px; font-weight:bold;">
+          Продолжить
+        </button>
+      </div>
+    `;
+    
+    modal.appendChild(modalContent);
+    document.body.appendChild(modal);
+
+    modalContent.querySelector('#cancelCountBtn').addEventListener('click', () => {
+      modal.remove();
+    });
+
+    modalContent.querySelector('#confirmCountBtn').addEventListener('click', () => {
+      modal.remove();
+      countAllCounters();
+    });
+
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        modal.remove();
+      }
+    });
+  }
+
+        // ===== Обработчик кнопки =====
+        countAllBtn.addEventListener('click', () => {
+          showConfirmationModal();
+        });
+      }
+    });
+  });
+
+})();
+

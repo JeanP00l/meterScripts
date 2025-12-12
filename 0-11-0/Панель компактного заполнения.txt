@@ -1,0 +1,2118 @@
+// Скрипт "Панель компактного заполнения"
+(() => {
+  'use strict';
+
+  // ===== Утилиты =====
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  function showToast(text, time = 3000, color = '#333') {
+    let toastContainer = document.getElementById('toast-container');
+    if (!toastContainer) {
+      toastContainer = document.createElement('div');
+      toastContainer.id = 'toast-container';
+      Object.assign(toastContainer.style, {
+        position: 'fixed',
+        bottom: '20px',
+        right: '20px',
+        zIndex: '1000001',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '10px',
+        pointerEvents: 'none',
+        alignItems: 'flex-end'
+      });
+      document.body.appendChild(toastContainer);
+    }
+
+    const toast = document.createElement('div');
+    toast.textContent = text;
+    Object.assign(toast.style, {
+      background: color,
+      color: '#fff',
+      padding: '10px 20px',
+      borderRadius: '10px',
+      fontSize: '14px',
+      opacity: '0',
+      pointerEvents: 'none',
+      fontFamily: 'sans-serif',
+      transition: 'opacity 0.3s ease, transform 0.3s ease',
+      transform: 'translateY(10px)',
+      maxWidth: '400px',
+      wordWrap: 'break-word',
+      whiteSpace: 'normal'
+    });
+
+    toastContainer.appendChild(toast);
+
+    setTimeout(() => {
+      toast.style.opacity = '0.95';
+      toast.style.transform = 'translateY(0)';
+    }, 10);
+
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateY(-10px)';
+      setTimeout(() => {
+        if (toast.parentNode) {
+          toast.remove();
+        }
+        if (toastContainer.children.length === 0) {
+          toastContainer.remove();
+        }
+      }, 300);
+    }, time);
+  }
+
+  async function waitForSelector(sel, timeout = 5000) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      const el = document.querySelector(sel);
+      if (el) return el;
+      await wait(100);
+    }
+    return null;
+  }
+
+  // Функции для работы с React (из существующих скриптов)
+  async function setReactInputValue(selectorOrElement, value, maxRetries = 3, silent = false) {
+    let input;
+    if (typeof selectorOrElement === 'string') {
+      input = await waitForSelector(selectorOrElement);
+    } else {
+      input = selectorOrElement;
+    }
+    if (!input) return false;
+    
+    let workflowBlocked = false;
+    if (silent) {
+      window._blockWorkflow = true;
+      workflowBlocked = true;
+    }
+    
+    try {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        const lastValue = input.value;
+        
+        const isTextarea = input.tagName.toLowerCase() === 'textarea';
+        const prototype = isTextarea 
+          ? window.HTMLTextAreaElement.prototype 
+          : window.HTMLInputElement.prototype;
+        
+        const nativeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+        
+        if (nativeValueSetter) {
+          nativeValueSetter.call(input, value);
+        } else {
+          input.value = value;
+        }
+        
+        const tracker = input._valueTracker;
+        if (tracker) {
+          try {
+            tracker.setValue(lastValue);
+          } catch (e) {}
+        }
+        
+        const inputEvent = new Event('input', { bubbles: true, cancelable: true });
+        const changeEvent = new Event('change', { bubbles: true, cancelable: true });
+        const blurEvent = new Event('blur', { bubbles: true, cancelable: true });
+        
+        if (silent) {
+          inputEvent._programmatic = true;
+          changeEvent._programmatic = true;
+          blurEvent._programmatic = true;
+        }
+        
+        input.dispatchEvent(inputEvent);
+        input.dispatchEvent(changeEvent);
+        input.dispatchEvent(blurEvent);
+        
+        await wait(150);
+        
+        if (input.value === String(value)) {
+          return true;
+        }
+        
+        if (attempt < maxRetries) {
+          await wait(200);
+        }
+      }
+      
+      return input.value === String(value);
+    } finally {
+      if (workflowBlocked) {
+        setTimeout(() => {
+          window._blockWorkflow = false;
+        }, 500);
+      }
+    }
+  }
+
+  async function setReactCheckboxValue(selectorOrElement, checked, maxRetries = 3, silent = false) {
+    let checkbox;
+    if (typeof selectorOrElement === 'string') {
+      checkbox = await waitForSelector(selectorOrElement);
+    } else {
+      checkbox = selectorOrElement;
+    }
+    if (!checkbox || checkbox.type !== 'checkbox') {
+      return false;
+    }
+    
+    let workflowBlocked = false;
+    if (silent) {
+      window._blockWorkflow = true;
+      workflowBlocked = true;
+    }
+    
+    try {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        const lastChecked = checkbox.checked;
+        
+        const prototype = window.HTMLInputElement.prototype;
+        const nativeCheckedSetter = Object.getOwnPropertyDescriptor(prototype, 'checked')?.set;
+        
+        if (nativeCheckedSetter) {
+          nativeCheckedSetter.call(checkbox, checked);
+        } else {
+          checkbox.checked = checked;
+        }
+        
+        const tracker = checkbox._valueTracker;
+        if (tracker) {
+          try {
+            tracker.setValue(lastChecked);
+          } catch (e) {}
+        }
+        
+        const changeEvent = new Event('change', { bubbles: true, cancelable: true });
+        const inputEvent = new Event('input', { bubbles: true, cancelable: true });
+        const clickEvent = new Event('click', { bubbles: true, cancelable: true });
+        
+        if (silent) {
+          changeEvent._programmatic = true;
+          inputEvent._programmatic = true;
+          clickEvent._programmatic = true;
+        }
+        
+        checkbox.dispatchEvent(clickEvent);
+        checkbox.dispatchEvent(inputEvent);
+        checkbox.dispatchEvent(changeEvent);
+        
+        await wait(150);
+        
+        if (checkbox.checked === checked) {
+          return true;
+        }
+        
+        if (attempt < maxRetries) {
+          await wait(200);
+        }
+      }
+      
+      return checkbox.checked === checked;
+    } finally {
+      if (workflowBlocked) {
+        setTimeout(() => {
+          window._blockWorkflow = false;
+        }, 500);
+      }
+    }
+  }
+
+  async function setDateValue(input, value) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      return false;
+    }
+    
+    const currentValue = input.value || '';
+    if (currentValue === value) {
+      return true;
+    }
+    
+    const lastValue = currentValue || '';
+    
+    const oldValueAttr = input.getAttribute('value');
+    if (oldValueAttr && oldValueAttr !== value) {
+      input.removeAttribute('value');
+      await wait(50);
+    }
+    
+    let valueSet = false;
+    try {
+      const dateObj = new Date(value + 'T12:00:00');
+      if (!isNaN(dateObj.getTime())) {
+        input.valueAsDate = dateObj;
+        await wait(150);
+        
+        const resultValue = input.value || '';
+        if (resultValue === value || resultValue.startsWith(value.split('-')[0] + '-')) {
+          valueSet = true;
+          if (resultValue !== value) {
+            const prototype = window.HTMLInputElement.prototype;
+            const nativeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+            if (nativeValueSetter) {
+              nativeValueSetter.call(input, value);
+            } else {
+              input.value = value;
+            }
+            await wait(50);
+          }
+        }
+      }
+    } catch (e) {}
+    
+    if (!valueSet) {
+      const prototype = window.HTMLInputElement.prototype;
+      const nativeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      
+      if (nativeValueSetter) {
+        nativeValueSetter.call(input, value);
+      } else {
+        input.value = value;
+      }
+      await wait(50);
+    }
+    
+    input.setAttribute('value', value);
+    
+    try {
+      const tracker = input._valueTracker;
+      if (tracker && typeof tracker.setValue === 'function') {
+        tracker.setValue(lastValue);
+      }
+    } catch (e) {}
+    
+    const inputEvent = new InputEvent('input', { 
+      bubbles: true, 
+      cancelable: true,
+      data: value,
+      inputType: 'insertText',
+      isComposing: false
+    });
+    inputEvent._programmatic = true;
+    input.dispatchEvent(inputEvent);
+    await wait(100);
+    
+    const changeEvent = new Event('change', { bubbles: true, cancelable: true });
+    changeEvent._programmatic = true;
+    input.dispatchEvent(changeEvent);
+    await wait(100);
+    
+    const container = input.closest('._inputContainer_27y0k_15') || 
+                     input.closest('En') || 
+                     input.closest('en') ||
+                     input.parentElement;
+    if (container) {
+      const span = container.querySelector('span');
+      if (span) {
+        const [year, month, day] = value.split('-');
+        const formattedDate = `${day}.${month}.${year}`;
+        span.textContent = formattedDate;
+        
+        await wait(200);
+        if (span.textContent !== formattedDate) {
+          span.textContent = formattedDate;
+        }
+        
+        await wait(200);
+        if (span.textContent !== formattedDate) {
+          span.textContent = formattedDate;
+        }
+      }
+    }
+    
+    const blurEvent = new Event('blur', { bubbles: true, cancelable: true });
+    input.dispatchEvent(blurEvent);
+    
+    await wait(200);
+    
+    const finalValue = input.value || '';
+    const finalAttr = input.getAttribute('value') || '';
+    return finalValue === value || finalAttr === value || finalValue.startsWith(value.split('-')[0] + '-');
+  }
+
+  // Функции для поиска полей
+  function findFieldByLabel(labelText) {
+    const labels = Array.from(document.querySelectorAll('label'));
+    const targetLabel = labels.find(l => l.textContent && l.textContent.includes(labelText));
+    if (!targetLabel) return null;
+    
+    const container = targetLabel.nextElementSibling || targetLabel.parentElement;
+    if (container) {
+      const input = container.querySelector('input') || container.querySelector('textarea') || container.querySelector('select');
+      return input;
+    }
+    return null;
+  }
+
+  function findDateFieldByLabel(labelText) {
+    const labels = Array.from(document.querySelectorAll('label'));
+    const targetLabel = labels.find(l => l.textContent && l.textContent.includes(labelText));
+    if (!targetLabel) return null;
+    
+    let container = targetLabel.nextElementSibling;
+    if (!container || !container.classList.contains('_inputContainer_27y0k_15')) {
+      container = targetLabel.parentElement.querySelector('._inputContainer_27y0k_15');
+    }
+    
+    if (container) {
+      const input = container.querySelector('input[type="date"]');
+      if (input) return input;
+    }
+    
+    const parentContainer = targetLabel.closest('._dateInput_27y0k_1') || 
+                           targetLabel.closest('div');
+    if (parentContainer) {
+      const input = parentContainer.querySelector('input[type="date"]');
+      if (input) return input;
+    }
+    
+    return null;
+  }
+
+  function findSelectFieldByLabel(labelText) {
+    const allFields = document.querySelectorAll('._selectField_1ydb5_1, ._selectField_1mapt_1');
+    for (const field of allFields) {
+      const label = field.querySelector('label');
+      if (label) {
+        // Проверяем как прямой textContent, так и содержимое span внутри label
+        const labelTextContent = label.textContent || '';
+        const span = label.querySelector('span');
+        const spanText = span ? span.textContent || '' : '';
+        
+        // Ищем по началу текста (например, "Тип ПУ" должно найти "Тип ПУ - <b>СЕ 101</b>")
+        if (labelTextContent.includes(labelText) || spanText.includes(labelText)) {
+          return field;
+        }
+      }
+    }
+    return null;
+  }
+
+  // Функция для изменения значения в React селекте
+  async function changeSelectValue(labelText, optionText) {
+    const selectField = findSelectFieldByLabel(labelText);
+    if (!selectField) return false;
+
+    window._blockingSelectClicks = true;
+    
+    const blockOtherSelects = (e) => {
+      if (window._blockingSelectClicks) {
+        const target = e.target;
+        const clickedField = target.closest('._selectField_1ydb5_1') || target.closest('._selectField_1mapt_1');
+        if (clickedField) {
+          const label = clickedField.querySelector('label');
+          const isTargetField = label && label.textContent.includes(labelText);
+          if (!isTargetField) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            return false;
+          }
+        }
+      }
+    };
+    
+    document.addEventListener('click', blockOtherSelects, true);
+    document.addEventListener('mousedown', blockOtherSelects, true);
+    
+    try {
+      let container = selectField.querySelector('._container_8fpl2_1');
+      if (!container) {
+        container = selectField.querySelector('._container_1oihn_1');
+      }
+      if (!container) {
+        return false;
+      }
+
+      let currentValueEl = selectField.querySelector('._value_8fpl2_13');
+      if (!currentValueEl) {
+        currentValueEl = selectField.querySelector('._value_1oihn_13');
+      }
+      const currentValue = currentValueEl ? currentValueEl.textContent.trim() : '';
+
+      container.click();
+      await wait(400);
+
+      let panel = document.querySelector('._panel_1q4rd_19.slide-up-enter-done');
+      if (!panel) {
+        panel = document.querySelector('._panel_1q4rd_19');
+      }
+      if (!panel) {
+        panel = document.querySelector('._panel_1i7mm_19.slide-up-enter-done');
+      }
+      if (!panel) {
+        panel = document.querySelector('._panel_1i7mm_19');
+      }
+      if (!panel) return false;
+
+      const allOptions = panel.querySelectorAll('._option_8fpl2_78, ._option_1oihn_78');
+      let option = null;
+      
+      for (const opt of allOptions) {
+        const span = opt.querySelector('span');
+        const text = span ? span.textContent.trim() : opt.textContent.trim();
+        if (text === optionText) {
+          option = opt;
+          break;
+        }
+      }
+
+      if (option) {
+        option.click();
+        await wait(300);
+        
+        let newValueEl = selectField.querySelector('._value_8fpl2_13');
+        if (!newValueEl) {
+          newValueEl = selectField.querySelector('._value_1oihn_13');
+        }
+        const newValue = newValueEl ? newValueEl.textContent.trim() : '';
+        
+        if (newValue === optionText || newValue !== currentValue) {
+          return true;
+        }
+      }
+      return false;
+    } finally {
+      document.removeEventListener('click', blockOtherSelects, true);
+      document.removeEventListener('mousedown', blockOtherSelects, true);
+      
+      setTimeout(() => {
+        window._blockingSelectClicks = false;
+      }, 500);
+    }
+  }
+
+  // ===== Панель компактного заполнения =====
+  let compactPanel = null;
+  let isPanelOpen = false;
+  let currentPhotoIndex = 0;
+  let photos = [];
+  let magnifierGlass = null;
+  let isMagnifying = false;
+  const magnifierSize = 300;
+  const zoomLevel = 2.0;
+  let magnifierAnimationFrame = null;
+  let cachedRect = null;
+  let cachedImageSrc = null;
+
+  function updateMagnifier(e, photoImg) {
+    if (!magnifierGlass || !photoImg || !photoImg.src || !photoImg.complete || photoImg.naturalWidth === 0) {
+      return;
+    }
+
+    // Кэшируем rect для оптимизации
+    if (!cachedRect || cachedImageSrc !== photoImg.src) {
+      cachedRect = photoImg.getBoundingClientRect();
+      cachedImageSrc = photoImg.src;
+      
+      // Устанавливаем backgroundImage только при смене изображения
+      magnifierGlass.style.backgroundImage = `url(${photoImg.src})`;
+      magnifierGlass.style.backgroundSize = `${photoImg.naturalWidth * zoomLevel}px ${photoImg.naturalHeight * zoomLevel}px`;
+      magnifierGlass.style.backgroundRepeat = 'no-repeat';
+    }
+
+    const x = e.clientX - cachedRect.left;
+    const y = e.clientY - cachedRect.top;
+
+    // Проверяем, что курсор находится над изображением
+    if (x < 0 || x > cachedRect.width || y < 0 || y > cachedRect.height) {
+      magnifierGlass.style.display = 'none';
+      return;
+    }
+
+    // Обновляем позицию увеличенной области
+    const glassX = e.clientX - magnifierSize / 2;
+    const glassY = e.clientY - magnifierSize / 2;
+    
+    magnifierGlass.style.left = `${glassX}px`;
+    magnifierGlass.style.top = `${glassY}px`;
+    magnifierGlass.style.display = 'block';
+
+    // Вычисляем позицию для увеличенного изображения
+    const imgX = (x / cachedRect.width) * photoImg.naturalWidth;
+    const imgY = (y / cachedRect.height) * photoImg.naturalHeight;
+
+    // Создаем увеличенное изображение внутри лупы
+    const bgX = -(imgX * zoomLevel - magnifierSize / 2);
+    const bgY = -(imgY * zoomLevel - magnifierSize / 2);
+
+    magnifierGlass.style.backgroundPosition = `${bgX}px ${bgY}px`;
+  }
+
+  function setupMagnifier() {
+    // Удаляем старые обработчики, если они есть
+    const photoImg = document.querySelector('#current-photo');
+    if (!photoImg) return;
+
+    // Проверяем, что обработчики еще не добавлены
+    if (photoImg._magnifierSetup) return;
+    photoImg._magnifierSetup = true;
+
+    let lastMouseEvent = null;
+
+    photoImg.addEventListener('mouseenter', (e) => {
+      if (photoImg.src && photoImg.complete && photoImg.naturalWidth > 0) {
+        isMagnifying = true;
+        cachedRect = null; // Сбрасываем кэш при входе
+        cachedImageSrc = null;
+        lastMouseEvent = e;
+        updateMagnifier(e, photoImg);
+      }
+    });
+
+    photoImg.addEventListener('mouseleave', () => {
+      isMagnifying = false;
+      cachedRect = null;
+      cachedImageSrc = null;
+      lastMouseEvent = null;
+      if (magnifierAnimationFrame) {
+        cancelAnimationFrame(magnifierAnimationFrame);
+        magnifierAnimationFrame = null;
+      }
+      if (magnifierGlass) {
+        magnifierGlass.style.display = 'none';
+      }
+    });
+
+    photoImg.addEventListener('mousemove', (e) => {
+      if (!isMagnifying || !photoImg.src || !photoImg.complete || photoImg.naturalWidth === 0) {
+        if (magnifierGlass) magnifierGlass.style.display = 'none';
+        return;
+      }
+
+      lastMouseEvent = e;
+
+      // Используем requestAnimationFrame для оптимизации обновлений
+      if (magnifierAnimationFrame) {
+        cancelAnimationFrame(magnifierAnimationFrame);
+      }
+
+      magnifierAnimationFrame = requestAnimationFrame(() => {
+        if (lastMouseEvent && isMagnifying) {
+          updateMagnifier(lastMouseEvent, photoImg);
+        }
+        magnifierAnimationFrame = null;
+      });
+    });
+
+    // Также обрабатываем событие загрузки изображения
+    photoImg.addEventListener('load', () => {
+      // Изображение загружено, лупа готова к работе
+    });
+  }
+
+  function createCompactPanel() {
+    if (compactPanel) return compactPanel;
+
+    compactPanel = document.createElement('div');
+    compactPanel.id = 'compact-fill-panel';
+    compactPanel.style.cssText = `
+      position: fixed;
+      top: 2.5%;
+      left: 2.5%;
+      width: 95%;
+      height: 95%;
+      background: white;
+      border: 2px solid #007acc;
+      border-radius: 10px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+      z-index: 1000000;
+      display: none;
+      flex-direction: column;
+      font-family: sans-serif;
+      overflow: hidden;
+    `;
+
+    // Заголовок с кнопкой закрытия
+    const header = document.createElement('div');
+    header.style.cssText = `
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 15px;
+      background: #007acc;
+      color: white;
+      font-weight: bold;
+      font-size: 16px;
+    `;
+    header.innerHTML = `
+      <span>Панель компактного заполнения</span>
+      <button id="close-panel-btn" style="
+        background: rgba(255,255,255,0.2);
+        border: 1px solid rgba(255,255,255,0.3);
+        color: white;
+        padding: 5px 15px;
+        border-radius: 5px;
+        cursor: pointer;
+        font-size: 14px;
+      ">Закрыть (ESC)</button>
+    `;
+
+    // Основной контент (flex row)
+    const content = document.createElement('div');
+    content.style.cssText = `
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    `;
+
+    // Левая часть - поля формы
+    const fieldsContainer = document.createElement('div');
+    fieldsContainer.style.cssText = `
+      flex: 1;
+      padding: 20px;
+      overflow-y: auto;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 15px;
+      align-content: start;
+    `;
+
+    // Правая часть - фотографии
+    const photosContainer = document.createElement('div');
+    photosContainer.style.cssText = `
+      width: 40%;
+      min-width: 400px;
+      border-left: 2px solid #ddd;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #f5f5f5;
+    `;
+
+    const photoViewer = document.createElement('div');
+    photoViewer.id = 'photo-viewer';
+    photoViewer.style.cssText = `
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    `;
+
+    const photoImg = document.createElement('img');
+    photoImg.id = 'current-photo';
+    photoImg.style.cssText = `
+      max-width: 100%;
+      max-height: calc(100% - 80px);
+      object-fit: contain;
+      border-radius: 5px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+      cursor: none;
+    `;
+
+    // Создаем элемент лупы
+    magnifierGlass = document.createElement('div');
+    magnifierGlass.id = 'magnifier-glass';
+    magnifierGlass.style.cssText = `
+      position: fixed;
+      width: 300px;
+      height: 300px;
+      border: 3px solid #007acc;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.9);
+      pointer-events: none;
+      display: none;
+      z-index: 1000002;
+      box-shadow: 0 0 20px rgba(0, 122, 204, 0.5);
+      overflow: hidden;
+    `;
+
+    // Добавляем элемент лупы в body для правильного позиционирования
+    document.body.appendChild(magnifierGlass);
+
+    const photoControls = document.createElement('div');
+    photoControls.style.cssText = `
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      margin-top: 20px;
+    `;
+
+    const prevBtn = document.createElement('button');
+    prevBtn.id = 'photo-prev';
+    prevBtn.innerHTML = '◀';
+    prevBtn.style.cssText = `
+      padding: 10px 20px;
+      font-size: 24px;
+      background: #007acc;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: bold;
+    `;
+
+    const photoCounter = document.createElement('span');
+    photoCounter.id = 'photo-counter';
+    photoCounter.style.cssText = `
+      font-size: 16px;
+      font-weight: bold;
+      color: #333;
+      min-width: 100px;
+      text-align: center;
+    `;
+
+    const nextBtn = document.createElement('button');
+    nextBtn.id = 'photo-next';
+    nextBtn.innerHTML = '▶';
+    nextBtn.style.cssText = `
+      padding: 10px 20px;
+      font-size: 24px;
+      background: #007acc;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: bold;
+    `;
+
+    photoControls.appendChild(prevBtn);
+    photoControls.appendChild(photoCounter);
+    photoControls.appendChild(nextBtn);
+    photoViewer.appendChild(photoImg);
+    photoViewer.appendChild(photoControls);
+    photosContainer.appendChild(photoViewer);
+
+    content.appendChild(fieldsContainer);
+    content.appendChild(photosContainer);
+
+    compactPanel.appendChild(header);
+    compactPanel.appendChild(content);
+
+    document.body.appendChild(compactPanel);
+
+    // Обработчики
+    header.querySelector('#close-panel-btn').addEventListener('click', () => {
+      closePanel();
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (!isPanelOpen) return;
+      
+      if (e.key === 'Escape') {
+        closePanel();
+      } else if (e.key === 'ArrowLeft' && !e.target.matches('input, textarea, select')) {
+        e.preventDefault();
+        if (currentPhotoIndex > 0) {
+          currentPhotoIndex--;
+          updatePhoto();
+        }
+      } else if (e.key === 'ArrowRight' && !e.target.matches('input, textarea, select')) {
+        e.preventDefault();
+        if (currentPhotoIndex < photos.length - 1) {
+          currentPhotoIndex++;
+          updatePhoto();
+        }
+      }
+    });
+
+    prevBtn.addEventListener('click', () => {
+      if (currentPhotoIndex > 0) {
+        currentPhotoIndex--;
+        updatePhoto();
+      }
+    });
+
+    nextBtn.addEventListener('click', () => {
+      if (currentPhotoIndex < photos.length - 1) {
+        currentPhotoIndex++;
+        updatePhoto();
+      }
+    });
+
+    // Настраиваем лупу при создании панели
+    setupMagnifier();
+
+    return compactPanel;
+  }
+
+  function updatePhoto() {
+    const photoImg = document.querySelector('#current-photo');
+    const photoCounter = document.querySelector('#photo-counter');
+    const prevBtn = document.querySelector('#photo-prev');
+    const nextBtn = document.querySelector('#photo-next');
+
+    if (!photoImg || !photoCounter) return;
+
+    // Корректируем currentPhotoIndex, если он выходит за границы
+    if (currentPhotoIndex >= photos.length) {
+      currentPhotoIndex = Math.max(0, photos.length - 1);
+    }
+    if (currentPhotoIndex < 0) {
+      currentPhotoIndex = 0;
+    }
+
+    if (photos.length === 0) {
+      photoImg.src = '';
+      photoImg.style.display = 'none';
+      photoCounter.textContent = 'Нет фотографий';
+      if (prevBtn) prevBtn.style.display = 'none';
+      if (nextBtn) nextBtn.style.display = 'none';
+      return;
+    }
+
+    photoImg.style.display = 'block';
+    if (prevBtn) prevBtn.style.display = 'block';
+    if (nextBtn) nextBtn.style.display = 'block';
+
+    const photo = photos[currentPhotoIndex];
+    if (photo && photo.src) {
+      photoImg.src = photo.src;
+      photoCounter.textContent = `${currentPhotoIndex + 1} / ${photos.length}`;
+      
+      // Сбрасываем флаг настройки лупы при смене изображения
+      photoImg._magnifierSetup = false;
+      
+      // Настраиваем лупу для нового изображения после загрузки
+      if (photoImg.complete) {
+        setTimeout(() => setupMagnifier(), 100);
+      } else {
+        photoImg.addEventListener('load', () => {
+          setTimeout(() => setupMagnifier(), 100);
+        }, { once: true });
+      }
+    } else {
+      photoCounter.textContent = 'Ошибка загрузки';
+    }
+
+    if (prevBtn) {
+      prevBtn.disabled = currentPhotoIndex === 0;
+    }
+    if (nextBtn) {
+      nextBtn.disabled = currentPhotoIndex === photos.length - 1;
+    }
+  }
+
+  function collectPhotos() {
+    const photoContainer = document.querySelector('div._photoField_vvuiq_1');
+    if (!photoContainer) {
+      updatePhoto();
+      return;
+    }
+
+    const imageUrls = new Set();
+    const newPhotos = [];
+    
+    // Ищем все изображения в контейнере фотографий (включая вложенные контейнеры)
+    const images = photoContainer.querySelectorAll('img');
+    
+    images.forEach(img => {
+      // Проверяем различные источники изображений
+      let src = img.src || img.getAttribute('src') || '';
+      
+      // Также проверяем data-src (для lazy loading)
+      if (!src || src === 'about:blank') {
+        src = img.getAttribute('data-src') || '';
+      }
+      
+      // Проверяем background-image в style
+      if (!src && img.style.backgroundImage) {
+        const bgMatch = img.style.backgroundImage.match(/url\(['"]?([^'"]+)['"]?\)/);
+        if (bgMatch) {
+          src = bgMatch[1];
+        }
+      }
+      
+      if (src && (src.startsWith('http') || src.startsWith('data:') || src.startsWith('blob:'))) {
+        // Избегаем дубликатов
+        if (!imageUrls.has(src)) {
+          imageUrls.add(src);
+          newPhotos.push({ src: src });
+        }
+      }
+    });
+    
+    // Также проверяем элементы с background-image
+    const elementsWithBg = photoContainer.querySelectorAll('[style*="background-image"]');
+    elementsWithBg.forEach(el => {
+      const bgImage = window.getComputedStyle(el).backgroundImage;
+      const bgMatch = bgImage.match(/url\(['"]?([^'"]+)['"]?\)/);
+      if (bgMatch) {
+        const src = bgMatch[1];
+        if (src && (src.startsWith('http') || src.startsWith('data:') || src.startsWith('blob:'))) {
+          if (!imageUrls.has(src)) {
+            imageUrls.add(src);
+            newPhotos.push({ src: src });
+          }
+        }
+      }
+    });
+
+    // Также проверяем input file на наличие выбранных файлов
+    const fileInput = photoContainer.querySelector('input[type="file"]');
+    if (fileInput && fileInput.files && fileInput.files.length > 0) {
+      const filePromises = [];
+      Array.from(fileInput.files).forEach(file => {
+        if (file.type.startsWith('image/')) {
+          const promise = new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+              if (!imageUrls.has(e.target.result)) {
+                imageUrls.add(e.target.result);
+                newPhotos.push({ src: e.target.result });
+              }
+              resolve();
+            };
+            reader.readAsDataURL(file);
+          });
+          filePromises.push(promise);
+        }
+      });
+      
+      Promise.all(filePromises).then(() => {
+        // Сохраняем текущий src фотографии для восстановления индекса
+        const currentPhotoSrc = photos[currentPhotoIndex]?.src;
+        const oldPhotoCount = photos.length;
+        
+        photos = newPhotos;
+        
+        // Если количество фотографий не изменилось и текущая фотография все еще существует, сохраняем индекс
+        if (oldPhotoCount === photos.length && currentPhotoSrc) {
+          const sameIndex = photos.findIndex(p => p.src === currentPhotoSrc);
+          if (sameIndex >= 0) {
+            currentPhotoIndex = sameIndex;
+          } else {
+            // Если текущая фотография не найдена, корректируем индекс
+            if (currentPhotoIndex >= photos.length) {
+              currentPhotoIndex = Math.max(0, photos.length - 1);
+            }
+          }
+        } else {
+          // Если количество изменилось, корректируем индекс
+          if (currentPhotoIndex >= photos.length) {
+            currentPhotoIndex = Math.max(0, photos.length - 1);
+          }
+        }
+        
+        updatePhoto();
+      });
+    } else {
+      // Сохраняем текущий src фотографии для восстановления индекса
+      const currentPhotoSrc = photos[currentPhotoIndex]?.src;
+      const oldPhotoCount = photos.length;
+      
+      photos = newPhotos;
+      
+      // Если количество фотографий не изменилось и текущая фотография все еще существует, сохраняем индекс
+      if (oldPhotoCount === photos.length && currentPhotoSrc) {
+        const sameIndex = photos.findIndex(p => p.src === currentPhotoSrc);
+        if (sameIndex >= 0) {
+          currentPhotoIndex = sameIndex;
+        } else {
+          // Если текущая фотография не найдена, корректируем индекс
+          if (currentPhotoIndex >= photos.length) {
+            currentPhotoIndex = Math.max(0, photos.length - 1);
+          }
+        }
+      } else {
+        // Если количество изменилось, корректируем индекс
+        if (currentPhotoIndex >= photos.length) {
+          currentPhotoIndex = Math.max(0, photos.length - 1);
+        }
+      }
+      
+      updatePhoto();
+    }
+  }
+
+  function createFieldRow(labelText, fieldId, fieldType = 'input', options = {}) {
+    const row = document.createElement('div');
+    row.style.cssText = `
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    `;
+
+    const label = document.createElement('label');
+    label.textContent = labelText;
+    label.style.cssText = `
+      font-weight: bold;
+      font-size: 13px;
+      color: #333;
+    `;
+
+    let input;
+    if (fieldType === 'date') {
+      input = document.createElement('input');
+      input.type = 'date';
+    } else if (fieldType === 'time') {
+      input = document.createElement('input');
+      input.type = 'time';
+    } else if (fieldType === 'checkbox') {
+      input = document.createElement('input');
+      input.type = 'checkbox';
+    } else if (fieldType === 'select') {
+      input = document.createElement('select');
+      if (options.options) {
+        options.options.forEach(opt => {
+          const option = document.createElement('option');
+          option.value = opt.value;
+          option.textContent = opt.text;
+          input.appendChild(option);
+        });
+      }
+    } else {
+      input = document.createElement('input');
+      input.type = 'text';
+    }
+
+    input.id = `panel-${fieldId}`;
+    input.style.cssText = `
+      padding: 8px;
+      border: 1px solid #ddd;
+      border-radius: 5px;
+      font-size: 14px;
+      width: 100%;
+      box-sizing: border-box;
+    `;
+
+    if (options.readonly) {
+      input.readOnly = true;
+      input.style.background = '#f5f5f5';
+    }
+
+    row.appendChild(label);
+    row.appendChild(input);
+
+    return { row, input };
+  }
+
+  function syncFieldFromPage(fieldId, selector, transform = null) {
+    const panelField = document.querySelector(`#panel-${fieldId}`);
+    if (!panelField) return;
+
+    // Поддерживаем как строку, так и массив селекторов
+    let pageField;
+    if (typeof selector === 'string') {
+      pageField = document.querySelector(selector);
+    } else if (Array.isArray(selector)) {
+      for (const sel of selector) {
+        pageField = document.querySelector(sel);
+        if (pageField) break;
+      }
+    } else {
+      pageField = selector;
+    }
+
+    if (!pageField) {
+      if (panelField.type === 'checkbox') {
+        panelField.checked = false;
+      } else {
+        panelField.value = '';
+      }
+      return;
+    }
+
+    let value = '';
+    
+    // Проверяем видимость поля
+    if (pageField.offsetParent === null && pageField.type !== 'hidden') {
+      // Поле скрыто, но может иметь значение
+    }
+
+    if (pageField.type === 'checkbox') {
+      value = pageField.checked;
+      if (panelField.type === 'checkbox') {
+        panelField.checked = value;
+      } else {
+        panelField.value = value ? 'Да' : 'Нет';
+      }
+    } else if (pageField.type === 'date') {
+      // Для date полей проверяем несколько источников
+      value = pageField.value || '';
+      
+      // Если value пустое, проверяем атрибут value
+      if (!value || value.length < 10) {
+        value = pageField.getAttribute('value') || '';
+      }
+      
+      // Если все еще пустое, пытаемся извлечь из span
+      if (!value || value.length < 10) {
+        const container = pageField.closest('._inputContainer_27y0k_15') || 
+                         pageField.closest('._dateInput_27y0k_1') ||
+                         pageField.parentElement;
+        if (container) {
+          const span = container.querySelector('span');
+          if (span && span.textContent) {
+            const dateMatch = span.textContent.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+            if (dateMatch) {
+              value = `${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}`;
+            }
+          }
+        }
+      }
+      
+      panelField.value = value || '';
+    } else if (pageField.tagName === 'SELECT' || pageField.closest('._selectField_1ydb5_1') || pageField.closest('._selectField_1mapt_1')) {
+      const selectField = pageField.closest('._selectField_1ydb5_1') || pageField.closest('._selectField_1mapt_1');
+      if (selectField) {
+        const valueEl = selectField.querySelector('._value_8fpl2_13') || selectField.querySelector('._value_1oihn_13');
+        if (valueEl) {
+          value = valueEl.textContent.trim();
+          panelField.value = value;
+        } else {
+          // Fallback на прямое значение select
+          value = pageField.value || '';
+          panelField.value = value;
+        }
+      }
+    } else if (pageField.type === 'time') {
+      // Для time полей проверяем value, атрибут value и span
+      value = pageField.value || '';
+      
+      if (!value || value.length < 5) {
+        value = pageField.getAttribute('value') || '';
+      }
+      
+      // Если все еще пустое, пытаемся извлечь из span
+      if (!value || value.length < 5) {
+        const container = pageField.closest('._inputContainer_vum8a_15') || 
+                         pageField.closest('._timeInput_vum8a_1') ||
+                         pageField.parentElement;
+        if (container) {
+          const span = container.querySelector('span');
+          if (span && span.textContent) {
+            const timeMatch = span.textContent.match(/(\d{2}):(\d{2})/);
+            if (timeMatch) {
+              value = `${timeMatch[1]}:${timeMatch[2]}`;
+            } else {
+              value = span.textContent.trim();
+            }
+          }
+        }
+      }
+      
+      panelField.value = value || '';
+    } else {
+      // Для обычных input полей проверяем value и атрибут value
+      value = pageField.value || '';
+      
+      // Если value пустое, проверяем атрибут value
+      if (!value) {
+        value = pageField.getAttribute('value') || '';
+      }
+      
+      // Также проверяем, может быть значение в span (для некоторых React компонентов)
+      if (!value) {
+        const container = pageField.closest('._inputContainer_1rtfy_8') || 
+                         pageField.closest('._inputContainer_5jz4r_5') ||
+                         pageField.closest('._inputContainer_27y0k_15') ||
+                         pageField.closest('._inputContainer_vum8a_15') ||
+                         pageField.parentElement;
+        if (container) {
+          const span = container.querySelector('span');
+          if (span && span.textContent && span.textContent.trim() !== '') {
+            value = span.textContent.trim();
+          }
+        }
+      }
+      
+      if (transform) {
+        value = transform(value);
+      }
+      panelField.value = value || '';
+    }
+  }
+
+  async function syncFieldToPage(fieldId, selector, transform = null, selectLabel = null) {
+    const panelField = document.querySelector(`#panel-${fieldId}`);
+    if (!panelField) return;
+
+    let value = panelField.type === 'checkbox' ? panelField.checked : panelField.value;
+
+    if (transform) {
+      value = transform(value);
+    }
+
+    // Если это селект, используем специальную функцию
+    if (selectLabel) {
+      await changeSelectValue(selectLabel, value);
+      return;
+    }
+
+    // Поддерживаем как строку, так и массив селекторов
+    let pageField;
+    if (typeof selector === 'string') {
+      pageField = document.querySelector(selector);
+    } else if (Array.isArray(selector)) {
+      for (const sel of selector) {
+        pageField = document.querySelector(sel);
+        if (pageField) break;
+      }
+    } else {
+      pageField = selector;
+    }
+
+    if (!pageField) return;
+
+    // Используем элемент напрямую, так как функции теперь поддерживают элементы
+    if (pageField.type === 'checkbox') {
+      await setReactCheckboxValue(pageField, value, 3, false);
+    } else if (pageField.type === 'date') {
+      await setDateValue(pageField, value);
+    } else {
+      await setReactInputValue(pageField, value, 3, false);
+    }
+  }
+
+  function openPanel() {
+    if (!compactPanel) {
+      createCompactPanel();
+    }
+
+    const fieldsContainer = compactPanel.querySelector('div[style*="grid-template-columns"]');
+    if (!fieldsContainer) return;
+
+    // Очищаем контейнер
+    fieldsContainer.innerHTML = '';
+
+    // Загружаем шаблоны антимагнитной пломбы
+    const antimagneticTemplates = JSON.parse(localStorage.getItem('antimagnetic_templates') || '[]');
+
+    // Функция для поиска поля по нескольким селекторам
+    function findFieldBySelectors(selectors) {
+      if (typeof selectors === 'string') {
+        return document.querySelector(selectors);
+      }
+      for (const sel of selectors) {
+        const field = document.querySelector(sel);
+        if (field) return field;
+      }
+      return null;
+    }
+
+    // Создаем поля
+    const fields = [
+      { id: 'check-date', label: 'Дата проверки', type: 'date', selector: null, findFunction: () => {
+        return findDateFieldByLabel('Дата проверки');
+      }},
+      { id: 'check-time', label: 'Время проверки', type: 'time', selector: null, findFunction: () => {
+        const labels = Array.from(document.querySelectorAll('label'));
+        const targetLabel = labels.find(l => l.textContent && l.textContent.includes('Время проверки'));
+        if (!targetLabel) return null;
+        
+        const parentContainer = targetLabel.closest('._timeInput_vum8a_1') || targetLabel.closest('div');
+        if (parentContainer) {
+          const container = parentContainer.querySelector('._inputContainer_vum8a_15');
+          if (container) {
+            const input = container.querySelector('input[type="time"]');
+            if (input) return input;
+          }
+          const input = parentContainer.querySelector('input[type="time"]');
+          if (input) return input;
+        }
+        return null;
+      }},
+      { id: 'counter-type', label: 'Тип ПУ', type: 'input', selector: null, readonly: true, getValue: () => {
+        const field = findSelectFieldByLabel('Тип ПУ');
+        if (field) {
+          const label = field.querySelector('label');
+          if (label) {
+            // Извлекаем значение из label (например, "Тип ПУ - МЕРКУРИЙ 201.8")
+            const labelText = label.textContent || '';
+            
+            // Пытаемся найти значение после "Тип ПУ" или "Тип ПУ -"
+            // Формат может быть: "Тип ПУ - МЕРКУРИЙ 201.8" или "Тип ПУ МЕРКУРИЙ 201.8"
+            const match = labelText.match(/Тип ПУ\s*-?\s*(.+)/i);
+            if (match && match[1]) {
+              const value = match[1].trim();
+              return value;
+            }
+            
+            // Если не нашли через regex, проверяем наличие <b> или <strong> тегов
+            const boldEl = label.querySelector('b') || label.querySelector('strong');
+            if (boldEl) {
+              const value = boldEl.textContent.trim();
+              return value;
+            }
+          }
+          
+          // Fallback: проверяем значение селекта (но это будет "Соответствует" или "Не соответствует")
+          const valueEl = field.querySelector('._value_8fpl2_13') || field.querySelector('._value_1oihn_13');
+          return valueEl ? valueEl.textContent.trim() : '';
+        }
+        return '';
+      }},
+      { id: 'fact-counter-type', label: 'Фактический тип ПУ', type: 'input', selector: 'input#fact_counter_type', conditional: true },
+      { id: 'capacity', label: 'Разрядность', type: 'select', selector: null, selectLabel: 'Разрядность', getValue: () => {
+        const field = findSelectFieldByLabel('Разрядность');
+        if (field) {
+          const valueEl = field.querySelector('._value_8fpl2_13') || field.querySelector('._value_1oihn_13');
+          return valueEl ? valueEl.textContent.trim() : '';
+        }
+        return '';
+      }},
+      { id: 'nominal-current', label: 'Номинальный ток', type: 'select', selector: null, selectLabel: 'Номинальный ток', getValue: () => {
+        const field = findSelectFieldByLabel('Номинальный ток');
+        if (field) {
+          const valueEl = field.querySelector('._value_8fpl2_13') || field.querySelector('._value_1oihn_13');
+          return valueEl ? valueEl.textContent.trim() : '';
+        }
+        return '';
+      }},
+      { id: 'nominal-voltage', label: 'Номинальное напряжение', type: 'select', selector: null, selectLabel: 'Номинальное напряжение', getValue: () => {
+        const field = findSelectFieldByLabel('Номинальное напряжение');
+        if (field) {
+          const valueEl = field.querySelector('._value_8fpl2_13') || field.querySelector('._value_1oihn_13');
+          return valueEl ? valueEl.textContent.trim() : '';
+        }
+        return '';
+      }},
+      { id: 'transmission-ratio', label: 'Передаточное число', type: 'select', selector: null, selectLabel: 'Передаточное число', getValue: () => {
+        const field = findSelectFieldByLabel('Передаточное число');
+        if (field) {
+          const valueEl = field.querySelector('._value_8fpl2_13') || field.querySelector('._value_1oihn_13');
+          return valueEl ? valueEl.textContent.trim() : '';
+        }
+        return '';
+      }},
+      { id: 'accuracy-class', label: 'Класс точности', type: 'select', selector: null, selectLabel: 'Класс точности', getValue: () => {
+        const field = findSelectFieldByLabel('Класс точности');
+        if (field) {
+          const valueEl = field.querySelector('._value_8fpl2_13') || field.querySelector('._value_1oihn_13');
+          return valueEl ? valueEl.textContent.trim() : '';
+        }
+        return '';
+      }},
+      { id: 'counter-number', label: '№ ПУ', type: 'select', selector: null, selectLabel: '№ ПУ', getValue: () => {
+        const field = findSelectFieldByLabel('№ ПУ');
+        if (field) {
+          const valueEl = field.querySelector('._value_8fpl2_13') || field.querySelector('._value_1oihn_13');
+          return valueEl ? valueEl.textContent.trim() : '';
+        }
+        return '';
+      }},
+      { id: 'installation-place', label: 'Место установки ПУ', type: 'select', selector: null, selectLabel: 'Место установки ПУ', getValue: () => {
+        const field = findSelectFieldByLabel('Место установки ПУ');
+        if (field) {
+          const valueEl = field.querySelector('._value_8fpl2_13') || field.querySelector('._value_1oihn_13');
+          return valueEl ? valueEl.textContent.trim() : '';
+        }
+        return '';
+      }},
+      { id: 'manufacture-year', label: 'Год изготовления ПУ', type: 'select', selector: null, selectLabel: 'Год изготовления ПУ', getValue: () => {
+        const field = findSelectFieldByLabel('Год изготовления ПУ');
+        if (field) {
+          const valueEl = field.querySelector('._value_8fpl2_13') || field.querySelector('._value_1oihn_13');
+          return valueEl ? valueEl.textContent.trim() : '';
+        }
+        return '';
+      }},
+      { id: 'last-inspection', label: 'Дата предыдущей поверки', type: 'date', selector: null, findFunction: () => {
+        // Используем функцию поиска по label из существующих скриптов
+        const labels = Array.from(document.querySelectorAll('label'));
+        const targetLabel = labels.find(l => l.textContent && l.textContent.includes('Дата предыдущей поверки'));
+        if (!targetLabel) return null;
+        
+        let container = targetLabel.nextElementSibling;
+        if (!container || !container.classList.contains('_inputContainer_27y0k_15')) {
+          container = targetLabel.parentElement.querySelector('._inputContainer_27y0k_15');
+        }
+        if (container) {
+          const input = container.querySelector('input[type="date"]');
+          if (input) return input;
+        }
+        const parentContainer = targetLabel.closest('._dateInput_27y0k_1') || targetLabel.closest('div');
+        if (parentContainer) {
+          const input = parentContainer.querySelector('input[type="date"]');
+          if (input) return input;
+        }
+        return null;
+      }},
+      { id: 'dyup-gep', label: 'ДЮП/ГЕП', type: 'input', selector: null, readonly: true, getValue: () => {
+        const block = document.querySelector('#dyupgep_block');
+        if (block) {
+          const checked = block.querySelector('input[type="radio"]:checked');
+          return checked ? checked.value : '';
+        }
+        return '';
+      }},
+      { id: 'next-inspection', label: 'Дата следующей поверки', type: 'date', selector: null, findFunction: () => {
+        const labels = Array.from(document.querySelectorAll('label'));
+        const targetLabel = labels.find(l => l.textContent && l.textContent.includes('Дата следующей поверки'));
+        if (!targetLabel) return null;
+        
+        let container = targetLabel.nextElementSibling;
+        if (!container || !container.classList.contains('_inputContainer_27y0k_15')) {
+          container = targetLabel.parentElement.querySelector('._inputContainer_27y0k_15');
+        }
+        if (container) {
+          const input = container.querySelector('input[type="date"]');
+          if (input) return input;
+        }
+        const parentContainer = targetLabel.closest('._dateInput_27y0k_1') || targetLabel.closest('div');
+        if (parentContainer) {
+          const input = parentContainer.querySelector('input[type="date"]');
+          if (input) return input;
+        }
+        return null;
+      }},
+      { id: 'seal-place-checkbox', label: 'Пломба на клемной крышке', type: 'checkbox', selector: 'input#seal_place_terminal_cover' },
+      { id: 'seal-number', label: '№ Пломбы на клемной крышке', type: 'input', selector: 'input#seal_number_terminal_cover' },
+      { id: 'seal-body-checkbox', label: 'Пломба на корпусе ПУ', type: 'checkbox', selector: 'input#seal_place_meter_body' },
+      { id: 'antimagnetic-checkbox', label: 'Антимагнитная пломба', type: 'checkbox', selector: 'input#seal_place_antimagnetic' },
+      { id: 'antimagnetic-number', label: '№ Антимагнитной пломбы', type: 'input', selector: null, findFunction: () => {
+        // Ищем поле по label (может быть скрыто, но должно существовать)
+        const labels = Array.from(document.querySelectorAll('label'));
+        const targetLabel = labels.find(l => l.textContent && l.textContent.includes('№ Антимагнитной пломбы'));
+        
+        if (targetLabel) {
+          // Проверяем, есть ли for атрибут
+          if (targetLabel.getAttribute('for')) {
+            const input = document.querySelector(`input#${targetLabel.getAttribute('for')}`);
+            if (input) return input;
+          }
+          
+          // Ищем input в соседнем или родительском контейнере
+          const container = targetLabel.nextElementSibling || targetLabel.parentElement;
+          if (container) {
+            const inputContainer = container.querySelector('._inputContainer_1rtfy_8') || container.querySelector('._inputContainer_5jz4r_5');
+            if (inputContainer) {
+              const input = inputContainer.querySelector('input[type="text"]') || inputContainer.querySelector('input');
+              if (input) return input;
+            }
+            const input = container.querySelector('input[type="text"]') || container.querySelector('input');
+            if (input) return input;
+          }
+        }
+        
+        // Fallback: ищем по datalist
+        const datalist = document.querySelector('datalist#antimagnetic_datalist');
+        if (datalist) {
+          // Ищем input, который ссылается на этот datalist
+          const input = document.querySelector('input[list="antimagnetic_datalist"]');
+          if (input) return input;
+        }
+        
+        return null;
+      }, datalist: antimagneticTemplates },
+      { id: 'compliance-result', label: 'Результат проверки', type: 'select', selector: null, selectLabel: 'Результат проверки', getValue: () => {
+        const field = findSelectFieldByLabel('Результат проверки');
+        if (field) {
+          const valueEl = field.querySelector('._value_8fpl2_13') || field.querySelector('._value_1oihn_13');
+          return valueEl ? valueEl.textContent.trim() : '';
+        }
+        return '';
+      }},
+      { id: 'current-value-general', label: 'Текущие показания - общие', type: 'input', selector: null, findFunction: () => {
+        // Ищем поле по label "Текущие показания - общие"
+        const labels = Array.from(document.querySelectorAll('label'));
+        const targetLabel = labels.find(l => l.textContent && l.textContent.includes('Текущие показания - общие'));
+        if (!targetLabel) return null;
+        
+        // Проверяем, есть ли for атрибут
+        if (targetLabel.getAttribute('for')) {
+          const input = document.querySelector(`input#${targetLabel.getAttribute('for')}`);
+          if (input) return input;
+        }
+        
+        // Ищем input в соседнем или родительском контейнере
+        const container = targetLabel.nextElementSibling || targetLabel.parentElement;
+        if (container) {
+          const inputContainer = container.querySelector('._inputContainer_5jz4r_5') || container.querySelector('._inputContainer_1rtfy_8');
+          if (inputContainer) {
+            const input = inputContainer.querySelector('input[type="number"]') || inputContainer.querySelector('input');
+            if (input) return input;
+          }
+          const input = container.querySelector('input[type="number"]') || container.querySelector('input');
+          if (input) return input;
+        }
+        return null;
+      }, conditional: true },
+      { id: 'current-value-1', label: 'Текущие показания - день', type: 'input', selector: null, findFunction: () => {
+        const labels = Array.from(document.querySelectorAll('label'));
+        const targetLabel = labels.find(l => l.textContent && l.textContent.includes('Текущие показания - день'));
+        if (!targetLabel) return null;
+        
+        if (targetLabel.getAttribute('for')) {
+          const input = document.querySelector(`input#${targetLabel.getAttribute('for')}`);
+          if (input) return input;
+        }
+        
+        const container = targetLabel.nextElementSibling || targetLabel.parentElement;
+        if (container) {
+          const inputContainer = container.querySelector('._inputContainer_5jz4r_5') || container.querySelector('._inputContainer_1rtfy_8');
+          if (inputContainer) {
+            const input = inputContainer.querySelector('input[type="number"]') || inputContainer.querySelector('input');
+            if (input) return input;
+          }
+          const input = container.querySelector('input[type="number"]') || container.querySelector('input');
+          if (input) return input;
+        }
+        return null;
+      }, conditional: true },
+      { id: 'current-value-2', label: 'Текущие показания - ночь', type: 'input', selector: null, findFunction: () => {
+        const labels = Array.from(document.querySelectorAll('label'));
+        const targetLabel = labels.find(l => l.textContent && l.textContent.includes('Текущие показания - ночь'));
+        if (!targetLabel) return null;
+        
+        if (targetLabel.getAttribute('for')) {
+          const input = document.querySelector(`input#${targetLabel.getAttribute('for')}`);
+          if (input) return input;
+        }
+        
+        const container = targetLabel.nextElementSibling || targetLabel.parentElement;
+        if (container) {
+          const inputContainer = container.querySelector('._inputContainer_5jz4r_5') || container.querySelector('._inputContainer_1rtfy_8');
+          if (inputContainer) {
+            const input = inputContainer.querySelector('input[type="number"]') || inputContainer.querySelector('input');
+            if (input) return input;
+          }
+          const input = container.querySelector('input[type="number"]') || container.querySelector('input');
+          if (input) return input;
+        }
+        return null;
+      }, conditional: true },
+    ];
+
+    // Определяем, какие поля "Текущие показания" показывать
+    const generalValueLabel = Array.from(document.querySelectorAll('label')).find(l => l.textContent && l.textContent.includes('Текущие показания - общие'));
+    const dayValueLabel = Array.from(document.querySelectorAll('label')).find(l => l.textContent && l.textContent.includes('Текущие показания - день'));
+    const nightValueLabel = Array.from(document.querySelectorAll('label')).find(l => l.textContent && l.textContent.includes('Текущие показания - ночь'));
+    
+    const isGeneralValue = !!generalValueLabel;
+    const isDayNightValue = !!(dayValueLabel || nightValueLabel);
+    
+    fields.forEach(fieldConfig => {
+      // Проверяем условные поля (показываем только если они есть на странице)
+      if (fieldConfig.conditional) {
+        let pageField = null;
+        
+        if (fieldConfig.findFunction) {
+          pageField = fieldConfig.findFunction();
+        } else if (fieldConfig.selector) {
+          if (typeof fieldConfig.selector === 'string') {
+            pageField = document.querySelector(fieldConfig.selector);
+          } else if (Array.isArray(fieldConfig.selector)) {
+            for (const sel of fieldConfig.selector) {
+              pageField = document.querySelector(sel);
+              if (pageField) break;
+            }
+          }
+        }
+        
+        // Для полей "Текущие показания" применяем специальную логику
+        if (fieldConfig.id === 'current-value-general' && !isGeneralValue) {
+          return; // Пропускаем "общие", если показываются день/ночь
+        }
+        if ((fieldConfig.id === 'current-value-1' || fieldConfig.id === 'current-value-2') && isGeneralValue) {
+          return; // Пропускаем день/ночь, если показывается "общие"
+        }
+        
+        if (!pageField || (pageField.offsetParent === null && pageField.type !== 'hidden')) {
+          return; // Пропускаем поле, если его нет на странице или оно скрыто
+        }
+      }
+
+      const { row, input } = createFieldRow(fieldConfig.label, fieldConfig.id, fieldConfig.type, fieldConfig);
+      
+      // Добавляем datalist для антимагнитной пломбы
+      if (fieldConfig.datalist && fieldConfig.datalist.length > 0) {
+        let datalist = document.getElementById('panel-antimagnetic-datalist');
+        if (!datalist) {
+          datalist = document.createElement('datalist');
+          datalist.id = 'panel-antimagnetic-datalist';
+          document.body.appendChild(datalist);
+        }
+        datalist.innerHTML = fieldConfig.datalist.map(t => `<option value="${t}">`).join('');
+        input.setAttribute('list', 'panel-antimagnetic-datalist');
+      }
+      
+      fieldsContainer.appendChild(row);
+
+      // Синхронизация с основной страницей
+      if (fieldConfig.findFunction) {
+        // Для полей с специальной функцией поиска
+        setTimeout(() => {
+          const pageField = fieldConfig.findFunction();
+          if (pageField) {
+            syncFieldFromPage(fieldConfig.id, pageField);
+          }
+        }, 100);
+
+        // Синхронизация из панели в страницу (только для не-readonly полей)
+        if (!fieldConfig.readonly) {
+          input.addEventListener('change', () => {
+            const pageField = fieldConfig.findFunction();
+            if (pageField) {
+              syncFieldToPage(fieldConfig.id, pageField);
+            }
+          });
+
+          input.addEventListener('input', () => {
+            if (fieldConfig.type !== 'checkbox' && fieldConfig.type !== 'select') {
+              const pageField = fieldConfig.findFunction();
+              if (pageField) {
+                syncFieldToPage(fieldConfig.id, pageField);
+              }
+            }
+          });
+        }
+      } else if (fieldConfig.selector) {
+        // Синхронизация из страницы в панель с небольшой задержкой для гарантии загрузки
+        setTimeout(() => {
+          syncFieldFromPage(fieldConfig.id, fieldConfig.selector);
+        }, 100);
+
+        // Синхронизация из панели в страницу (только для не-readonly полей)
+        if (!fieldConfig.readonly) {
+          input.addEventListener('change', () => {
+            syncFieldToPage(fieldConfig.id, fieldConfig.selector, null, fieldConfig.selectLabel);
+          });
+
+          input.addEventListener('input', () => {
+            if (fieldConfig.type !== 'checkbox' && fieldConfig.type !== 'select') {
+              syncFieldToPage(fieldConfig.id, fieldConfig.selector, null, fieldConfig.selectLabel);
+            }
+          });
+        }
+      } else if (fieldConfig.selectLabel) {
+        // Для селектов без прямого селектора
+        setTimeout(() => {
+          const field = findSelectFieldByLabel(fieldConfig.selectLabel);
+          if (field) {
+            const valueEl = field.querySelector('._value_8fpl2_13') || field.querySelector('._value_1oihn_13');
+            if (valueEl) {
+              const value = valueEl.textContent.trim();
+              input.value = value;
+            } else {
+              // Если не нашли элемент значения, пробуем найти через контейнер
+              const container = field.querySelector('._container_8fpl2_1') || field.querySelector('._container_1oihn_1');
+              if (container) {
+                const text = container.textContent.trim();
+                if (text) {
+                  input.value = text;
+                }
+              }
+            }
+          }
+        }, 100);
+
+        // Синхронизация из панели в страницу (только для не-readonly полей)
+        if (!fieldConfig.readonly) {
+          input.addEventListener('change', () => {
+            changeSelectValue(fieldConfig.selectLabel, input.value);
+          });
+        }
+      } else if (fieldConfig.getValue) {
+        // Для полей, которые нужно получать специальным способом
+        setTimeout(() => {
+          const value = fieldConfig.getValue();
+          if (input.type === 'checkbox') {
+            input.checked = value === true || value === 'true' || value === 'Да';
+          } else {
+            input.value = value || '';
+          }
+        }, 100);
+      }
+
+      // Специальная обработка для антимагнитной пломбы
+      if (fieldConfig.id === 'antimagnetic-checkbox') {
+        const antimagneticCheckbox = document.querySelector('input#seal_antimagnetic');
+        const antimagneticNumberRow = row;
+        
+        function updateAntimagneticVisibility() {
+          if (antimagneticCheckbox && antimagneticCheckbox.checked) {
+            antimagneticNumberRow.style.display = 'flex';
+          } else {
+            antimagneticNumberRow.style.display = 'none';
+          }
+        }
+
+        input.addEventListener('change', async () => {
+          await setReactCheckboxValue('input#seal_antimagnetic', input.checked, 3, false);
+          updateAntimagneticVisibility();
+        });
+
+        // Проверяем при загрузке
+        setTimeout(() => {
+          updateAntimagneticVisibility();
+        }, 100);
+      }
+    });
+
+    // Собираем фотографии
+    collectPhotos();
+    
+    // Настраиваем MutationObserver для отслеживания изменений в контейнере фотографий
+    const photoContainer = document.querySelector('div._photoField_vvuiq_1');
+    if (photoContainer && !compactPanel._photoObserver) {
+      const photoObserver = new MutationObserver((mutations) => {
+        // Проверяем, были ли добавлены новые изображения
+        let shouldUpdate = false;
+        mutations.forEach(mutation => {
+          if (mutation.addedNodes.length > 0) {
+            mutation.addedNodes.forEach(node => {
+              if (node.nodeType === 1) { // Element node
+                if (node.tagName === 'IMG' || node.querySelector('img') || 
+                    node.querySelector('input[type="file"]') || 
+                    (node.style && node.style.backgroundImage)) {
+                  shouldUpdate = true;
+                }
+              }
+            });
+          }
+          // Также проверяем изменения атрибутов (например, src)
+          if (mutation.type === 'attributes' && 
+              (mutation.attributeName === 'src' || mutation.attributeName === 'data-src')) {
+            shouldUpdate = true;
+          }
+        });
+        
+        if (shouldUpdate) {
+          // Небольшая задержка для гарантии, что DOM обновился
+          setTimeout(() => {
+            collectPhotos();
+          }, 300);
+        }
+      });
+      
+      photoObserver.observe(photoContainer, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['src', 'data-src', 'style']
+      });
+      
+      compactPanel._photoObserver = photoObserver;
+      
+      // Также слушаем события change на input file для немедленного обновления
+      const fileInput = photoContainer.querySelector('input[type="file"]');
+      if (fileInput) {
+        const handleFileChange = () => {
+          setTimeout(() => {
+            collectPhotos();
+          }, 500); // Задержка для загрузки файла
+        };
+        fileInput.addEventListener('change', handleFileChange);
+        // Сохраняем обработчик для очистки
+        compactPanel._fileInputHandler = handleFileChange;
+      }
+    }
+
+    // Функция для повышения z-index уведомлений и графических элементов
+    function ensureElementsAbovePanel() {
+      // Повышаем z-index для toast-container
+      const toastContainer = document.getElementById('toast-container');
+      if (toastContainer) {
+        // Принудительно устанавливаем z-index через style напрямую
+        toastContainer.style.setProperty('z-index', '1000001', 'important');
+        // Также проверяем через computed style
+        const computedZIndex = parseInt(window.getComputedStyle(toastContainer).zIndex);
+        if (computedZIndex < 1000001) {
+          toastContainer.style.setProperty('z-index', '1000001', 'important');
+        }
+      }
+      
+      // Повышаем z-index для всех существующих модальных окон и графических элементов
+      document.querySelectorAll('[style*="z-index"], [style*="zIndex"]').forEach(el => {
+        const style = el.getAttribute('style') || '';
+        const zIndexMatch = style.match(/z-index:\s*(\d+)|zIndex:\s*['"]?(\d+)/i);
+        if (zIndexMatch) {
+          const currentZIndex = parseInt(zIndexMatch[1] || zIndexMatch[2]);
+          if (currentZIndex >= 9999 && currentZIndex < 1000001) {
+            // Повышаем z-index для элементов, которые могут быть перекрыты панелью
+            if (style.includes('z-index')) {
+              el.style.zIndex = '1000001';
+            } else if (style.includes('zIndex')) {
+              el.style.zIndex = '1000001';
+            }
+          }
+        }
+      });
+      
+      // Также проверяем элементы с inline стилями через computed styles
+      document.querySelectorAll('div[style], div[id*="modal"], div[id*="overlay"], div[class*="modal"], div[class*="overlay"]').forEach(el => {
+        const computedStyle = window.getComputedStyle(el);
+        const zIndex = parseInt(computedStyle.zIndex);
+        if (zIndex >= 9999 && zIndex < 1000001 && el.offsetParent !== null) {
+          el.style.zIndex = '1000001';
+        }
+      });
+    }
+    
+    // Вызываем сразу при открытии панели
+    ensureElementsAbovePanel();
+    
+    // Настраиваем MutationObserver для отслеживания появления новых элементов
+    const observer = new MutationObserver((mutations) => {
+      ensureElementsAbovePanel();
+    });
+    
+    // Наблюдаем за изменениями в body
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['style', 'id', 'class']
+    });
+    
+    // Сохраняем observer для очистки при закрытии панели
+    compactPanel._toastObserver = observer;
+
+    // Показываем панель
+    compactPanel.style.display = 'flex';
+    isPanelOpen = true;
+
+    // Финальная синхронизация всех полей после небольшой задержки
+    setTimeout(() => {
+      fields.forEach(fieldConfig => {
+        if (fieldConfig.findFunction) {
+          const pageField = fieldConfig.findFunction();
+          if (pageField) {
+            syncFieldFromPage(fieldConfig.id, pageField);
+          }
+        } else if (fieldConfig.selector) {
+          syncFieldFromPage(fieldConfig.id, fieldConfig.selector);
+        } else if (fieldConfig.selectLabel) {
+          const field = findSelectFieldByLabel(fieldConfig.selectLabel);
+          const panelField = document.querySelector(`#panel-${fieldConfig.id}`);
+          if (field && panelField) {
+            const valueEl = field.querySelector('._value_8fpl2_13') || field.querySelector('._value_1oihn_13');
+            if (valueEl) {
+              panelField.value = valueEl.textContent.trim();
+            } else {
+              // Fallback на контейнер
+              const container = field.querySelector('._container_8fpl2_1') || field.querySelector('._container_1oihn_1');
+              if (container) {
+                const text = container.textContent.trim();
+                if (text) {
+                  panelField.value = text;
+                }
+              }
+            }
+          }
+        } else if (fieldConfig.getValue) {
+          const value = fieldConfig.getValue();
+          const panelField = document.querySelector(`#panel-${fieldConfig.id}`);
+          if (panelField) {
+            if (panelField.type === 'checkbox') {
+              panelField.checked = value === true || value === 'true' || value === 'Да';
+            } else {
+              panelField.value = value || '';
+            }
+          }
+        }
+      });
+      collectPhotos();
+    }, 300);
+
+    // Функция для добавления поля "Фактический тип ПУ" динамически
+    function addFactCounterTypeFieldIfNeeded() {
+      // Проверяем, есть ли уже это поле в панели
+      const existingField = document.querySelector('#panel-fact-counter-type');
+      if (existingField) {
+        return; // Поле уже есть
+      }
+      
+      // Проверяем, появилось ли поле на странице
+      const pageField = document.querySelector('input#fact_counter_type');
+      if (!pageField || pageField.offsetParent === null) {
+        return; // Поле еще не появилось или скрыто
+      }
+      
+      // Находим поле "Тип ПУ" в панели, чтобы добавить после него
+      const counterTypeInput = document.querySelector('#panel-counter-type');
+      if (!counterTypeInput) {
+        return; // Не нашли поле "Тип ПУ"
+      }
+      
+      // Находим родительский row элемент
+      const counterTypeRow = counterTypeInput.closest('div[style*="flex-direction: column"]');
+      if (!counterTypeRow) {
+        return; // Не нашли row элемент
+      }
+      
+      // Создаем поле "Фактический тип ПУ"
+      const fieldConfig = { id: 'fact-counter-type', label: 'Фактический тип ПУ', type: 'input', selector: 'input#fact_counter_type' };
+      const { row, input } = createFieldRow(fieldConfig.label, fieldConfig.id, fieldConfig.type, fieldConfig);
+      
+      // Вставляем после поля "Тип ПУ"
+      if (counterTypeRow.nextSibling) {
+        counterTypeRow.parentElement.insertBefore(row, counterTypeRow.nextSibling);
+      } else {
+        counterTypeRow.parentElement.appendChild(row);
+      }
+      
+      // Настраиваем синхронизацию
+      setTimeout(() => {
+        syncFieldFromPage(fieldConfig.id, fieldConfig.selector);
+      }, 100);
+      
+      input.addEventListener('change', () => {
+        syncFieldToPage(fieldConfig.id, fieldConfig.selector);
+      });
+      
+      input.addEventListener('input', () => {
+        syncFieldToPage(fieldConfig.id, fieldConfig.selector);
+      });
+    }
+
+    // Обновляем значения периодически
+    const syncInterval = setInterval(() => {
+      if (!isPanelOpen) {
+        clearInterval(syncInterval);
+        return;
+      }
+      
+      // Проверяем, нужно ли добавить поле "Фактический тип ПУ"
+      addFactCounterTypeFieldIfNeeded();
+      
+      // Периодически проверяем и обновляем z-index для уведомлений
+      const toastContainer = document.getElementById('toast-container');
+      if (toastContainer) {
+        const computedZIndex = parseInt(window.getComputedStyle(toastContainer).zIndex);
+        if (computedZIndex < 1000001) {
+          toastContainer.style.setProperty('z-index', '1000001', 'important');
+        }
+      }
+      
+      fields.forEach(fieldConfig => {
+        if (fieldConfig.findFunction) {
+          const pageField = fieldConfig.findFunction();
+          if (pageField) {
+            syncFieldFromPage(fieldConfig.id, pageField);
+          }
+        } else if (fieldConfig.selector) {
+          syncFieldFromPage(fieldConfig.id, fieldConfig.selector);
+        } else if (fieldConfig.selectLabel) {
+          const field = findSelectFieldByLabel(fieldConfig.selectLabel);
+          const panelField = document.querySelector(`#panel-${fieldConfig.id}`);
+          if (field && panelField) {
+            const valueEl = field.querySelector('._value_8fpl2_13') || field.querySelector('._value_1oihn_13');
+            if (valueEl) {
+              panelField.value = valueEl.textContent.trim();
+            } else {
+              // Fallback на контейнер
+              const container = field.querySelector('._container_8fpl2_1') || field.querySelector('._container_1oihn_1');
+              if (container) {
+                const text = container.textContent.trim();
+                if (text && text !== panelField.value) {
+                  panelField.value = text;
+                }
+              }
+            }
+          }
+        } else if (fieldConfig.getValue) {
+          const value = fieldConfig.getValue();
+          const panelField = document.querySelector(`#panel-${fieldConfig.id}`);
+          if (panelField) {
+            if (panelField.type === 'checkbox') {
+              const newChecked = value === true || value === 'true' || value === 'Да';
+              if (panelField.checked !== newChecked) {
+                panelField.checked = newChecked;
+              }
+            } else {
+              if (panelField.value !== value) {
+                panelField.value = value || '';
+              }
+            }
+          }
+        }
+      });
+      collectPhotos();
+    }, 1000);
+  }
+
+  function closePanel() {
+    if (compactPanel) {
+      compactPanel.style.display = 'none';
+      isPanelOpen = false;
+      
+      // Останавливаем observer при закрытии панели
+      if (compactPanel._toastObserver) {
+        compactPanel._toastObserver.disconnect();
+        compactPanel._toastObserver = null;
+      }
+      
+      // Останавливаем photo observer при закрытии панели
+      if (compactPanel._photoObserver) {
+        compactPanel._photoObserver.disconnect();
+        compactPanel._photoObserver = null;
+      }
+      
+      // Удаляем обработчик события change для input file
+      if (compactPanel._fileInputHandler) {
+        const photoContainer = document.querySelector('div._photoField_vvuiq_1');
+        if (photoContainer) {
+          const fileInput = photoContainer.querySelector('input[type="file"]');
+          if (fileInput) {
+            fileInput.removeEventListener('change', compactPanel._fileInputHandler);
+          }
+        }
+        compactPanel._fileInputHandler = null;
+      }
+    }
+  }
+
+  // Проверяем, находимся ли мы на основной странице акта (не на странице подписания)
+  function isMainActPage() {
+    // Проверяем наличие основных полей формы
+    const hasMainFields = document.querySelector('input#seal_number_terminal_cover') ||
+                         document.querySelector('input#current_value_1') ||
+                         document.querySelector('input[name="last_inspection_year"]');
+    
+    // Проверяем, что мы НЕ на странице подписания
+    const isSigningPage = document.querySelector('input#owner_is_absent') || 
+                          document.querySelector('input#refusal_of_sign');
+    
+    return hasMainFields && !isSigningPage;
+  }
+
+  // Добавляем кнопку для открытия панели
+  function addOpenButton() {
+    if (document.querySelector('#open-compact-panel-btn')) return;
+
+    const button = document.createElement('button');
+    button.id = 'open-compact-panel-btn';
+    button.textContent = '📋 Компактное заполнение';
+    button.style.cssText = `
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      z-index: 999998;
+      padding: 10px 20px;
+      background: #007acc;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: bold;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    `;
+
+    button.addEventListener('click', () => {
+      if (isMainActPage()) {
+        openPanel();
+      } else {
+        showToast('Панель доступна только на основной странице акта', 3000, '#a33');
+      }
+    });
+
+    document.body.appendChild(button);
+  }
+
+  // Инициализация
+  const observer = new MutationObserver(() => {
+    if (isMainActPage() && !document.querySelector('#open-compact-panel-btn')) {
+      addOpenButton();
+    }
+  });
+
+  observer.observe(document.body, { childList: true, subtree: true });
+
+  // Проверяем при загрузке
+  if (isMainActPage()) {
+    addOpenButton();
+  }
+})();
+

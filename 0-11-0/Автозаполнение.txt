@@ -1,0 +1,1793 @@
+// Обновленный скрипт "Автозаполнение.txt"
+(() => {
+	'use strict';
+
+	// ===== Настройки =====
+	const configKey = 'meter_script_settings';
+	const antimagneticTemplatesKey = 'antimagnetic_templates';
+	const saved = JSON.parse(localStorage.getItem(configKey) || '{}');
+	let place = saved.place ?? 1;
+	let hotkey = saved.hotkey ?? '/';
+	let SledORPred = saved.SledORPred ?? 1;
+	let sealNumberTemplate = saved.sealNumberTemplate ?? '';
+	
+	// Шаблоны антимагнитной пломбы
+	let antimagneticTemplates = JSON.parse(localStorage.getItem(antimagneticTemplatesKey) || '[]');
+	if (antimagneticTemplates.length === 0) {
+		// Значения по умолчанию
+		antimagneticTemplates = ['АМ-001', 'АМ-002', 'АМ-003'];
+		localStorage.setItem(antimagneticTemplatesKey, JSON.stringify(antimagneticTemplates));
+	}
+
+	// ===== Регистрация секции в общей панели =====
+	// Ждем, пока менеджер будет загружен
+	function waitForManager() {
+		return new Promise((resolve) => {
+			if (window.meterScriptsPanelManager) {
+				resolve();
+				return;
+			}
+			const checkInterval = setInterval(() => {
+				if (window.meterScriptsPanelManager) {
+					clearInterval(checkInterval);
+					resolve();
+				}
+			}, 100);
+			// Таймаут на случай, если менеджер не загрузится
+			setTimeout(() => {
+				clearInterval(checkInterval);
+				if (!window.meterScriptsPanelManager) {
+					console.error('Менеджер общей панели настроек не найден. Убедитесь, что скрипт "Менеджер общей панели настроек.txt" загружен первым.');
+				}
+				resolve();
+			}, 5000);
+		});
+	}
+
+	waitForManager().then(() => {
+		if (!window.meterScriptsPanelManager) return;
+
+		const sectionHtml = `
+			<label style="display:block; margin-bottom:6px;">
+				Тип проверки:<br>
+				<select id="placeSelectAuto" style="width:100%; padding:3px;">
+					<option value="1">Лестницы</option>
+					<option value="2">Квартиры</option>
+				</select>
+			</label>
+			<label style="display:block; margin-bottom:6px;">
+				Порядок счетчиков:<br>
+				<select id="SledORPredSelectAuto" style="width:100%; padding:3px;">
+					<option value="1">Следующий</option>
+					<option value="2">Предыдущий</option>
+				</select>
+			</label>
+			<div style="margin-top:8px;">
+				Горячая клавиша:<br>
+				<div style="display:flex; gap:4px; align-items:center; margin-top:2px;">
+					<input id="hotkeyInputAuto" value="${hotkey}" style="flex:1; padding:3px; min-width:50px;" readonly>
+					<button id="setHotkeyBtnAuto" style="flex:none; padding:3px 6px; white-space:nowrap;">Назначить</button>
+				</div>
+			</div>
+			<div style="margin-top:12px; padding-top:12px; border-top:1px solid #ddd;">
+				<label style="display:block; margin-bottom:6px;">
+					<strong style="font-size:12px;">Шаблон номера пломбы:</strong><br>
+					<input type="text" id="sealNumberTemplateInput" value="${sealNumberTemplate}" 
+						maxlength="5" pattern="[0-9]*" inputmode="numeric"
+						placeholder="Например: 564" 
+						style="width:100%; padding:3px; margin-top:2px; box-sizing:border-box;">
+					<small style="font-size:10px; color:#666;">Максимум 5 цифр</small>
+				</label>
+			</div>
+			<div style="margin-top:12px; padding-top:12px; border-top:1px solid #ddd;">
+				<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+					<strong style="font-size:12px;">Шаблоны антимагнитной пломбы:</strong>
+					<button id="manageTemplatesBtn" style="padding:2px 6px; font-size:11px; cursor:pointer;">Управление</button>
+				</div>
+				<div id="templatesPreview" style="font-size:11px; color:#666; max-height:60px; overflow-y:auto;">
+					${antimagneticTemplates.length > 0 
+						? antimagneticTemplates.slice(0, 3).join(', ') + (antimagneticTemplates.length > 3 ? '...' : '')
+						: 'Нет шаблонов'}
+				</div>
+			</div>
+		`;
+
+		window.meterScriptsPanelManager.registerSection('autofill', 'Автозаполнение', sectionHtml, {
+			onRender: (container) => {
+				const placeSelect = container.querySelector('#placeSelectAuto');
+				const SledORPredSelect = container.querySelector('#SledORPredSelectAuto');
+				const hotkeyInput = container.querySelector('#hotkeyInputAuto');
+				const setHotkeyBtn = container.querySelector('#setHotkeyBtnAuto');
+				const manageTemplatesBtn = container.querySelector('#manageTemplatesBtn');
+				const templatesPreview = container.querySelector('#templatesPreview');
+				const sealNumberTemplateInput = container.querySelector('#sealNumberTemplateInput');
+
+				placeSelect.value = String(place);
+				SledORPredSelect.value = String(SledORPred);
+				sealNumberTemplateInput.value = sealNumberTemplate;
+
+				function updateTemplatesPreview() {
+					if (antimagneticTemplates.length > 0) {
+						templatesPreview.textContent = antimagneticTemplates.slice(0, 3).join(', ') + 
+							(antimagneticTemplates.length > 3 ? '...' : '');
+					} else {
+						templatesPreview.textContent = 'Нет шаблонов';
+					}
+				}
+
+				function saveAndReload() {
+					localStorage.setItem(
+						configKey,
+						JSON.stringify({ place, hotkey, SledORPred, sealNumberTemplate })
+					);
+					localStorage.setItem(antimagneticTemplatesKey, JSON.stringify(antimagneticTemplates));
+					location.reload();
+				}
+				
+				function saveTemplates() {
+					localStorage.setItem(antimagneticTemplatesKey, JSON.stringify(antimagneticTemplates));
+					updateTemplatesPreview();
+					updateAntimagneticBlock();
+				}
+
+				placeSelect.addEventListener('change', () => {
+					place = Number(placeSelect.value);
+					saveAndReload();
+				});
+				SledORPredSelect.addEventListener('change', () => {
+					SledORPred = Number(SledORPredSelect.value);
+					saveAndReload();
+				});
+
+				// Обработчик для шаблона номера пломбы
+				sealNumberTemplateInput.addEventListener('input', (e) => {
+					// Разрешаем только цифры
+					const value = e.target.value.replace(/\D/g, '');
+					// Ограничиваем до 5 цифр
+					const limitedValue = value.slice(0, 5);
+					if (value !== limitedValue) {
+						e.target.value = limitedValue;
+					}
+					sealNumberTemplate = limitedValue;
+					// Сохраняем без перезагрузки
+					localStorage.setItem(
+						configKey,
+						JSON.stringify({ place, hotkey, SledORPred, sealNumberTemplate })
+					);
+				});
+				
+				sealNumberTemplateInput.addEventListener('blur', () => {
+					// При потере фокуса сохраняем финальное значение
+					const value = sealNumberTemplateInput.value.replace(/\D/g, '').slice(0, 5);
+					sealNumberTemplateInput.value = value;
+					sealNumberTemplate = value;
+					localStorage.setItem(
+						configKey,
+						JSON.stringify({ place, hotkey, SledORPred, sealNumberTemplate })
+					);
+				});
+
+				// ===== Назначение горячей клавиши =====
+				let waitingHotkey = false;
+				setHotkeyBtn.addEventListener('click', () => {
+					if (waitingHotkey) return;
+					waitingHotkey = true;
+					setHotkeyBtn.textContent = 'Нажмите клавишу...';
+					setHotkeyBtn.style.background = '#ffd966';
+					function captureKey(e) {
+						e.preventDefault();
+						hotkey = e.key;
+						hotkeyInput.value = hotkey;
+						setHotkeyBtn.textContent = 'Назначить';
+						setHotkeyBtn.style.background = '';
+						waitingHotkey = false;
+						document.removeEventListener('keydown', captureKey);
+						saveAndReload();
+					}
+					document.addEventListener('keydown', captureKey);
+				});
+
+				// ===== Управление шаблонами антимагнитной пломбы =====
+				manageTemplatesBtn.addEventListener('click', () => {
+					const modal = document.createElement('div');
+					modal.style.cssText = `
+						position: fixed;
+						inset: 0;
+						background: rgba(0,0,0,0.5);
+						z-index: 1000000;
+						display: flex;
+						justify-content: center;
+						align-items: center;
+					`;
+					
+					const modalContent = document.createElement('div');
+					modalContent.style.cssText = `
+						background: white;
+						padding: 20px;
+						border-radius: 10px;
+						width: 90%;
+						max-width: 500px;
+						max-height: 80vh;
+						overflow-y: auto;
+						font-family: sans-serif;
+					`;
+					
+					modalContent.innerHTML = `
+						<h3 style="margin-top:0; margin-bottom:15px;">Управление шаблонами антимагнитной пломбы</h3>
+						<div id="templatesList" style="margin-bottom:15px;">
+							${antimagneticTemplates.map((t, i) => `
+								<div style="display:flex; gap:5px; margin-bottom:5px; align-items:center;">
+									<input type="text" value="${t}" data-index="${i}" 
+										style="flex:1; padding:5px; border:1px solid #ccc; border-radius:4px;">
+									<button class="removeTemplate" data-index="${i}" 
+										style="padding:5px 10px; background:#dc3545; color:white; border:none; border-radius:4px; cursor:pointer;">Удалить</button>
+								</div>
+							`).join('')}
+						</div>
+						<div style="display:flex; gap:5px; margin-bottom:15px;">
+							<button id="addTemplateBtn" 
+								style="padding:5px 15px; background:#28a745; color:white; border:none; border-radius:4px; cursor:pointer;">+ Добавить</button>
+							<button id="closeTemplatesModal" 
+								style="padding:5px 15px; background:#6c757d; color:white; border:none; border-radius:4px; cursor:pointer; margin-left:auto;">Закрыть</button>
+						</div>
+					`;
+					
+					modal.appendChild(modalContent);
+					document.body.appendChild(modal);
+					
+					// Обработчики событий
+					modalContent.querySelectorAll('input[type="text"]').forEach(input => {
+						input.addEventListener('change', (e) => {
+							const index = parseInt(e.target.dataset.index);
+							antimagneticTemplates[index] = e.target.value.trim();
+							saveTemplates();
+						});
+					});
+					
+					modalContent.querySelectorAll('.removeTemplate').forEach(btn => {
+						btn.addEventListener('click', (e) => {
+							const index = parseInt(e.target.dataset.index);
+							antimagneticTemplates.splice(index, 1);
+							modal.remove();
+							saveTemplates();
+							// Переоткрываем модалку с обновленным списком
+							manageTemplatesBtn.click();
+						});
+					});
+					
+					modalContent.querySelector('#addTemplateBtn').addEventListener('click', () => {
+						antimagneticTemplates.push('Новый шаблон');
+						modal.remove();
+						saveTemplates();
+						// Переоткрываем модалку с обновленным списком
+						manageTemplatesBtn.click();
+					});
+					
+					modalContent.querySelector('#closeTemplatesModal').addEventListener('click', () => {
+						modal.remove();
+					});
+					
+					modal.addEventListener('click', (e) => {
+						if (e.target === modal) {
+							modal.remove();
+						}
+					});
+				});
+			}
+		});
+	});
+
+	// ===== Утилиты =====
+	const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+	
+	function showToast(text, time = 7000, color = '#333') {
+		// Создаем или находим контейнер для всех toast-сообщений
+		let toastContainer = document.getElementById('toast-container');
+		if (!toastContainer) {
+			toastContainer = document.createElement('div');
+			toastContainer.id = 'toast-container';
+			Object.assign(toastContainer.style, {
+				position: 'fixed',
+				bottom: '20px',
+				right: '20px',
+				zIndex: '999999',
+				display: 'flex',
+				flexDirection: 'column',
+				gap: '10px',
+				pointerEvents: 'none',
+				alignItems: 'flex-end'
+			});
+			document.body.appendChild(toastContainer);
+		}
+
+		// Создаем новое сообщение
+		const toast = document.createElement('div');
+		toast.textContent = text;
+		Object.assign(toast.style, {
+			background: color,
+			color: '#fff',
+			padding: '10px 20px',
+			borderRadius: '10px',
+			fontSize: '14px',
+			opacity: '0',
+			pointerEvents: 'none',
+			fontFamily: 'sans-serif',
+			transition: 'opacity 0.3s ease, transform 0.3s ease',
+			transform: 'translateY(10px)',
+			maxWidth: '400px',
+			wordWrap: 'break-word',
+			whiteSpace: 'normal'
+		});
+
+		// Добавляем сообщение в контейнер (новые сообщения добавляются в конец, они будут внизу)
+		toastContainer.appendChild(toast);
+
+		// Анимация появления
+		setTimeout(() => {
+			toast.style.opacity = '0.95';
+			toast.style.transform = 'translateY(0)';
+		}, 10);
+
+		// Удаляем сообщение через указанное время
+		setTimeout(() => {
+			toast.style.opacity = '0';
+			toast.style.transform = 'translateY(-10px)';
+			setTimeout(() => {
+				if (toast.parentNode) {
+					toast.remove();
+				}
+				// Если контейнер пуст, удаляем его
+				if (toastContainer.children.length === 0) {
+					toastContainer.remove();
+				}
+			}, 300);
+		}, time);
+	}
+
+	async function waitForSelector(sel, timeout = 5000) {
+		const start = Date.now();
+		while (Date.now() - start < timeout) {
+			const el = document.querySelector(sel);
+			if (el) return el;
+			await wait(100);
+		}
+		throw new Error(`Элемент не найден: ${sel}`);
+	}
+	
+	async function findButtonByText(text, fallbackSelectors = [], timeout = 5000) {
+		const start = Date.now();
+		while (Date.now() - start < timeout) {
+			// Ищем по тексту в label внутри button (новые и старые селекторы)
+			const buttons = Array.from(document.querySelectorAll('button'));
+			const found = buttons.find(btn => {
+				const label = btn.querySelector('._label_alwez_26, ._label_1xwkq_26, div');
+				if (label && label.textContent.trim().includes(text)) {
+					return true;
+				}
+				// Также проверяем прямой textContent
+				return btn.textContent.trim().includes(text);
+			});
+			if (found) return found;
+			
+			// Пробуем fallback селекторы
+			for (const sel of fallbackSelectors) {
+				const el = document.querySelector(sel);
+				if (el) return el;
+			}
+			
+			await wait(100);
+		}
+		throw new Error(`Кнопка "${text}" не найдена`);
+	}
+	
+	async function click(sel) {
+		const el = await waitForSelector(sel);
+		el.click();
+		await wait(100);
+	}
+	
+	async function clickButtonByText(text, fallbackSelectors = []) {
+		const btn = await findButtonByText(text, fallbackSelectors);
+		btn.click();
+		await wait(100);
+	}
+	
+	async function scrollTo(sel) {
+		const el = await waitForSelector(sel);
+		el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+		await wait(200);
+	}
+	
+	async function setReactInputValue(selector, value, maxRetries = 3, silent = false) {
+		const input = await waitForSelector(selector);
+		
+		// Флаг для временной блокировки workflow при silent режиме
+		let workflowBlocked = false;
+		if (silent) {
+			window._blockWorkflow = true;
+			workflowBlocked = true;
+		}
+		
+		try {
+			for (let attempt = 1; attempt <= maxRetries; attempt++) {
+				const lastValue = input.value;
+				
+				// Используем нативный setter для правильной работы с React
+				// Поддерживаем как input, так и textarea
+				const isTextarea = input.tagName.toLowerCase() === 'textarea';
+				const prototype = isTextarea 
+					? window.HTMLTextAreaElement.prototype 
+					: window.HTMLInputElement.prototype;
+				
+				const nativeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+				
+				if (nativeValueSetter) {
+					nativeValueSetter.call(input, value);
+				} else {
+					input.value = value;
+				}
+				
+				// Работаем с React трекером
+				const tracker = input._valueTracker;
+				if (tracker) {
+					try {
+						tracker.setValue(lastValue);
+					} catch (e) {
+						// Игнорируем ошибки трекера
+					}
+				}
+				
+				// Диспатчим события с bubbles: true для React, но с флагом для блокировки workflow
+				const inputEvent = new Event('input', { bubbles: true, cancelable: true });
+				const changeEvent = new Event('change', { bubbles: true, cancelable: true });
+				const blurEvent = new Event('blur', { bubbles: true, cancelable: true });
+				
+				// Добавляем флаг для идентификации программных событий
+				if (silent) {
+					inputEvent._programmatic = true;
+					changeEvent._programmatic = true;
+					blurEvent._programmatic = true;
+				}
+				
+				input.dispatchEvent(inputEvent);
+				input.dispatchEvent(changeEvent);
+				input.dispatchEvent(blurEvent);
+				
+				await wait(150);
+				
+				// Проверяем, что значение установилось
+				if (input.value === String(value)) {
+					return true;
+				}
+				
+				// Если не установилось и это не последняя попытка - ждем и пробуем снова
+				if (attempt < maxRetries) {
+					await wait(200);
+				}
+			}
+			
+			// Если после всех попыток значение не установилось
+			if (input.value !== String(value)) {
+				showToast(`⚠️ Не удалось установить значение в поле ${selector}`, 3000, '#a33');
+				return false;
+			}
+			
+			return true;
+		} finally {
+			// Снимаем блокировку workflow после небольшой задержки
+			if (workflowBlocked) {
+				setTimeout(() => {
+					window._blockWorkflow = false;
+				}, 500);
+			}
+		}
+	}
+
+	function incrementSeal(raw) {
+		// Теперь номера пломб только цифры, без буквенной части
+		const numMatch = raw.match(/^\d+$/);
+		if (!numMatch) throw new Error('Номер пломбы должен содержать только цифры');
+		const numStr = numMatch[0];
+		const inc = (parseInt(numStr, 10) + 1)
+			.toString()
+			.padStart(numStr.length, '0');
+		return inc;
+	}
+
+	async function getStableInputValue(input, attempts = 5, delay = 50) {
+		let lastVal = input.value;
+		for (let i = 0; i < attempts; i++) {
+			await wait(delay);
+			if (input.value === lastVal) return lastVal;
+			lastVal = input.value;
+		}
+		return lastVal;
+	}
+
+	// Функция для работы с React checkbox
+	async function setReactCheckboxValue(selector, checked, maxRetries = 3, silent = false) {
+		const checkbox = await waitForSelector(selector);
+		if (!checkbox || checkbox.type !== 'checkbox') {
+			return false;
+		}
+		
+		// Флаг для временной блокировки workflow при silent режиме
+		let workflowBlocked = false;
+		if (silent) {
+			window._blockWorkflow = true;
+			workflowBlocked = true;
+		}
+		
+		try {
+			for (let attempt = 1; attempt <= maxRetries; attempt++) {
+				const lastChecked = checkbox.checked;
+				
+				// Используем нативный setter для правильной работы с React
+				const prototype = window.HTMLInputElement.prototype;
+				const nativeCheckedSetter = Object.getOwnPropertyDescriptor(prototype, 'checked')?.set;
+				
+				if (nativeCheckedSetter) {
+					nativeCheckedSetter.call(checkbox, checked);
+				} else {
+					checkbox.checked = checked;
+				}
+				
+				// Работаем с React трекером (для checkbox тоже используется _valueTracker)
+				const tracker = checkbox._valueTracker;
+				if (tracker) {
+					try {
+						// Для checkbox трекер работает с булевым значением
+						tracker.setValue(lastChecked);
+					} catch (e) {
+						// Игнорируем ошибки трекера
+					}
+				}
+				
+				// Диспатчим события с bubbles: true для React
+				const changeEvent = new Event('change', { bubbles: true, cancelable: true });
+				const inputEvent = new Event('input', { bubbles: true, cancelable: true });
+				const clickEvent = new Event('click', { bubbles: true, cancelable: true });
+				
+				// Добавляем флаг для идентификации программных событий
+				if (silent) {
+					changeEvent._programmatic = true;
+					inputEvent._programmatic = true;
+					clickEvent._programmatic = true;
+				}
+				
+				checkbox.dispatchEvent(clickEvent);
+				checkbox.dispatchEvent(inputEvent);
+				checkbox.dispatchEvent(changeEvent);
+				
+				await wait(150);
+				
+				// Проверяем, что значение установилось
+				if (checkbox.checked === checked) {
+					return true;
+				}
+				
+				// Если не установилось и это не последняя попытка - ждем и пробуем снова
+				if (attempt < maxRetries) {
+					await wait(200);
+				}
+			}
+			
+			// Если после всех попыток значение не установилось
+			if (checkbox.checked !== checked) {
+				return false;
+			}
+			
+			return true;
+		} finally {
+			// Снимаем блокировку workflow после небольшой задержки
+			if (workflowBlocked) {
+				setTimeout(() => {
+					window._blockWorkflow = false;
+				}, 500);
+			}
+		}
+	}
+
+	// Функция для поиска поля результата проверки по тексту
+	function findComplianceField() {
+		// Пробуем новый селектор
+		const allFields = document.querySelectorAll('._selectField_1ydb5_1');
+		for (let i = 0; i < allFields.length; i++) {
+			const field = allFields[i];
+			const label = field.querySelector('label');
+			if (label && label.textContent.includes('Результат проверки')) {
+				return field;
+			}
+		}
+		// Fallback на старый селектор
+		const oldFields = document.querySelectorAll('._selectField_1mapt_1');
+		for (let i = 0; i < oldFields.length; i++) {
+			const field = oldFields[i];
+			const label = field.querySelector('label');
+			if (label && label.textContent.includes('Результат проверки')) {
+				return field;
+			}
+		}
+		return null;
+	}
+
+	async function changeComplianceSelect(optionText) {
+		// Временно блокируем клики на другие селекты
+		window._blockingSelectClicks = true;
+		
+		// Глобальный обработчик для блокировки кликов на другие селекты
+		const blockOtherSelects = (e) => {
+			if (window._blockingSelectClicks) {
+				const target = e.target;
+				// Проверяем, не наш ли это селект результата проверки
+				const selectField = target.closest('._selectField_1ydb5_1') || target.closest('._selectField_1mapt_1');
+				if (selectField) {
+					// Проверяем, что это поле результата проверки по тексту
+					const label = selectField.querySelector('label');
+					const isComplianceField = label && label.textContent.includes('Результат проверки');
+					// Если это не наш селект, блокируем
+					if (!isComplianceField) {
+						e.preventDefault();
+						e.stopPropagation();
+						e.stopImmediatePropagation();
+						return false;
+					}
+				}
+			}
+		};
+		
+		// Добавляем обработчики
+		document.addEventListener('click', blockOtherSelects, true);
+		document.addEventListener('mousedown', blockOtherSelects, true);
+		
+		try {
+			// Находим именно селект результата проверки по тексту
+			const complianceField = findComplianceField();
+			
+			if (!complianceField) {
+				return false;
+			}
+
+			// Пробуем новые селекторы, затем старые
+			let container = complianceField.querySelector('._container_8fpl2_1');
+			if (!container) {
+				container = complianceField.querySelector('._container_1oihn_1');
+			}
+			if (!container) {
+				return false;
+			}
+
+			// Сохраняем текущее значение для проверки
+			let currentValueEl = complianceField.querySelector('._value_8fpl2_13');
+			if (!currentValueEl) {
+				currentValueEl = complianceField.querySelector('._value_1oihn_13');
+			}
+			const currentValue = currentValueEl ? currentValueEl.textContent.trim() : '';
+
+			// Кликаем на контейнер для открытия меню
+			container.click();
+			await wait(400);
+
+			// Находим панель (новый селектор)
+			let panel = document.querySelector('._panel_1q4rd_19.slide-up-enter-done');
+			if (!panel) {
+				panel = document.querySelector('._panel_1q4rd_19');
+			}
+			// Fallback на старый селектор
+			if (!panel) {
+				panel = document.querySelector('._panel_1i7mm_19.slide-up-enter-done');
+			}
+			if (!panel) {
+				panel = document.querySelector('._panel_1i7mm_19');
+			}
+			if (!panel) return false;
+
+			// Ищем опции (новый селектор)
+			const allOptions = panel.querySelectorAll('._option_8fpl2_78, ._option_1oihn_78');
+			let option = null;
+			
+			for (const opt of allOptions) {
+				const span = opt.querySelector('span');
+				const text = span ? span.textContent.trim() : opt.textContent.trim();
+				if (text === optionText) {
+					option = opt;
+					break;
+				}
+			}
+
+			if (option) {
+				// Кликаем на опцию
+				option.click();
+				await wait(300);
+				
+				// Проверяем, что значение изменилось
+				let newValueEl = complianceField.querySelector('._value_8fpl2_13');
+				if (!newValueEl) {
+					newValueEl = complianceField.querySelector('._value_1oihn_13');
+				}
+				const newValue = newValueEl ? newValueEl.textContent.trim() : '';
+				
+				if (newValue === optionText || newValue !== currentValue) {
+					return true;
+				}
+			}
+			return false;
+		} finally {
+			// Удаляем обработчики
+			document.removeEventListener('click', blockOtherSelects, true);
+			document.removeEventListener('mousedown', blockOtherSelects, true);
+			
+			// Снимаем блокировку после небольшой задержки
+			setTimeout(() => {
+				window._blockingSelectClicks = false;
+			}, 500);
+		}
+	}
+
+	// Функция для поиска поля "Дата предыдущей поверки"
+	function findLastInspectionInput() {
+		// Сначала пробуем найти через компонент En с name="last_inspection_year"
+		const enComponent = document.querySelector('En[name="last_inspection_year"]') ||
+		                   document.querySelector('en[name="last_inspection_year"]') ||
+		                   document.querySelector('[name="last_inspection_year"]');
+		
+		if (enComponent) {
+			const input = enComponent.querySelector('input[name="last_inspection_year"]') ||
+			             enComponent.querySelector('input#last_inspection_year') ||
+			             enComponent.querySelector('input[type="date"]');
+			if (input) return input;
+		}
+		
+		// Ищем по name атрибуту
+		const inputByName = document.querySelector('input[name="last_inspection_year"]') ||
+		                   document.querySelector('input#last_inspection_year') ||
+		                   document.querySelector('input[type="date"][name="last_inspection_year"]');
+		if (inputByName) return inputByName;
+		
+		// Ищем по label "Дата предыдущей поверки" (самый надежный способ)
+		const labels = Array.from(document.querySelectorAll('label'));
+		const targetLabel = labels.find(l => l.textContent && l.textContent.includes('Дата предыдущей поверки'));
+		
+		if (targetLabel) {
+			let container = targetLabel.nextElementSibling;
+			if (!container || !container.classList.contains('_inputContainer_27y0k_15')) {
+				container = targetLabel.parentElement.querySelector('._inputContainer_27y0k_15');
+			}
+			
+			if (container) {
+				const input = container.querySelector('input[type="date"]');
+				if (input) return input;
+			}
+			
+			const parentContainer = targetLabel.closest('._dateInput_27y0k_1') || 
+			                       targetLabel.closest('div');
+			if (parentContainer) {
+				const input = parentContainer.querySelector('input[type="date"]');
+				if (input) return input;
+			}
+		}
+		
+		return null;
+	}
+
+	// Функция для поиска поля "Дата следующей поверки"
+	function findNextInspectionInput() {
+		// Сначала пробуем найти через компонент En с name="next_inspection_year"
+		const enComponent = document.querySelector('En[name="next_inspection_year"]') ||
+		                   document.querySelector('en[name="next_inspection_year"]') ||
+		                   document.querySelector('[name="next_inspection_year"]');
+		
+		if (enComponent) {
+			const input = enComponent.querySelector('input[name="next_inspection_year"]') ||
+			             enComponent.querySelector('input#next_inspection_year') ||
+			             enComponent.querySelector('input[type="date"]');
+			if (input) return input;
+		}
+		
+		// Ищем по name атрибуту
+		const inputByName = document.querySelector('input[name="next_inspection_year"]') ||
+		                   document.querySelector('input#next_inspection_year') ||
+		                   document.querySelector('input[type="date"][name="next_inspection_year"]');
+		if (inputByName) return inputByName;
+		
+		// Ищем по label "Дата следующей поверки" (самый надежный способ)
+		const labels = Array.from(document.querySelectorAll('label'));
+		const targetLabel = labels.find(l => l.textContent && l.textContent.includes('Дата следующей поверки'));
+		
+		if (targetLabel) {
+			let container = targetLabel.nextElementSibling;
+			if (!container || !container.classList.contains('_inputContainer_27y0k_15')) {
+				container = targetLabel.parentElement.querySelector('._inputContainer_27y0k_15');
+			}
+			
+			if (container) {
+				const input = container.querySelector('input[type="date"]');
+				if (input) return input;
+			}
+			
+			const parentContainer = targetLabel.closest('._dateInput_27y0k_1') || 
+			                       targetLabel.closest('div');
+			if (parentContainer) {
+				const input = parentContainer.querySelector('input[type="date"]');
+				if (input) return input;
+			}
+		}
+		
+		return null;
+	}
+
+	// Функция для установки значения в date поле (сохраняет день и месяц, меняет только год)
+	async function setDateValue(input, value) {
+		// Проверяем, что value имеет правильный формат YYYY-MM-DD
+		if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+			console.error('Неправильный формат даты:', value);
+			return false;
+		}
+		
+		// Проверяем текущее значение - если оно уже правильное, не устанавливаем снова
+		const currentValue = input.value || '';
+		if (currentValue === value) {
+			return true;
+		}
+		
+		const lastValue = currentValue || '';
+		
+		// Удаляем старый атрибут value, если он есть (важно для React)
+		const oldValueAttr = input.getAttribute('value');
+		if (oldValueAttr && oldValueAttr !== value) {
+			input.removeAttribute('value');
+			await wait(50);
+		}
+		
+		// Основной метод: Используем valueAsDate (работает лучше всего с React)
+		// Используем T12:00:00 вместо T00:00:00 чтобы избежать проблем с часовыми поясами
+		let valueSet = false;
+		try {
+			const dateObj = new Date(value + 'T12:00:00');
+			if (!isNaN(dateObj.getTime())) {
+				input.valueAsDate = dateObj;
+				await wait(150);
+				
+				// Проверяем результат - valueAsDate может изменить значение из-за часового пояса
+				const resultValue = input.value || '';
+				if (resultValue === value || resultValue.startsWith(value.split('-')[0] + '-')) {
+					valueSet = true;
+					// Если valueAsDate изменил значение из-за часового пояса, корректируем
+					if (resultValue !== value) {
+						const prototype = window.HTMLInputElement.prototype;
+						const nativeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+						if (nativeValueSetter) {
+							nativeValueSetter.call(input, value);
+						} else {
+							input.value = value;
+						}
+						await wait(50);
+					}
+				}
+			}
+		} catch (e) {
+			// Если valueAsDate не сработал, продолжаем
+		}
+		
+		// Если valueAsDate не сработал, используем нативный setter
+		if (!valueSet) {
+			const prototype = window.HTMLInputElement.prototype;
+			const nativeValueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+			
+			if (nativeValueSetter) {
+				nativeValueSetter.call(input, value);
+			} else {
+				input.value = value;
+			}
+			await wait(50);
+		}
+		
+		// Устанавливаем атрибут value (важно для React)
+		input.setAttribute('value', value);
+		
+		// Работаем с React трекером (если доступен)
+		try {
+			const tracker = input._valueTracker;
+			if (tracker && typeof tracker.setValue === 'function') {
+				tracker.setValue(lastValue);
+			}
+		} catch (e) {
+			// Игнорируем ошибки трекера
+		}
+		
+		// Диспатчим события для React
+		const inputEvent = new InputEvent('input', { 
+			bubbles: true, 
+			cancelable: true,
+			data: value,
+			inputType: 'insertText',
+			isComposing: false
+		});
+		// Помечаем как программное событие, чтобы избежать бесконечного цикла
+		inputEvent._programmatic = true;
+		input.dispatchEvent(inputEvent);
+		await wait(100);
+		
+		const changeEvent = new Event('change', { bubbles: true, cancelable: true });
+		// Помечаем как программное событие
+		changeEvent._programmatic = true;
+		input.dispatchEvent(changeEvent);
+		await wait(100);
+		
+		// Обновляем span с отформатированной датой (React может не обновить его автоматически)
+		const container = input.closest('._inputContainer_27y0k_15') || 
+		                 input.closest('En') || 
+		                 input.closest('en') ||
+		                 input.parentElement;
+		if (container) {
+			const span = container.querySelector('span');
+			if (span) {
+				// Форматируем дату в формат "DD.MM.YYYY"
+				const [year, month, day] = value.split('-');
+				const formattedDate = `${day}.${month}.${year}`;
+				span.textContent = formattedDate;
+				
+				// Обновляем span еще раз с задержкой (React может перезаписать его)
+				await wait(200);
+				if (span.textContent !== formattedDate) {
+					span.textContent = formattedDate;
+				}
+				
+				// Финальное обновление span после всех событий
+				await wait(200);
+				if (span.textContent !== formattedDate) {
+					span.textContent = formattedDate;
+				}
+			}
+		}
+		
+		// Диспатчим blur событие без реального blur() чтобы избежать прокрутки
+		const blurEvent = new Event('blur', { bubbles: true, cancelable: true });
+		input.dispatchEvent(blurEvent);
+		
+		await wait(200);
+		
+		// Проверяем результат - проверяем и value, и атрибут
+		const finalValue = input.value || '';
+		const finalAttr = input.getAttribute('value') || '';
+		const success = finalValue === value || finalAttr === value || finalValue.startsWith(value.split('-')[0] + '-');
+		
+		return success;
+	}
+
+	// Функция для автоматического обновления поля "Дата следующей поверки" при изменении "Дата предыдущей поверки"
+	async function updateNextInspectionDate(lastInspectionDate) {
+		// Проверяем формат даты
+		if (!lastInspectionDate || !/^\d{4}-\d{2}-\d{2}$/.test(lastInspectionDate)) {
+			return false;
+		}
+		
+		// Вычисляем дату следующей поверки (+16 лет, но на день раньше)
+		const dateParts = lastInspectionDate.split('-');
+		if (dateParts.length !== 3) {
+			return false;
+		}
+		
+		// Создаем объект Date из исходной даты
+		const lastDate = new Date(lastInspectionDate + 'T12:00:00');
+		// Добавляем 16 лет
+		lastDate.setFullYear(lastDate.getFullYear() + 16);
+		// Вычитаем один день
+		lastDate.setDate(lastDate.getDate() - 1);
+		
+		// Форматируем в YYYY-MM-DD
+		const year = lastDate.getFullYear();
+		const month = String(lastDate.getMonth() + 1).padStart(2, '0');
+		const day = String(lastDate.getDate()).padStart(2, '0');
+		const nextInspectionDate = `${year}-${month}-${day}`;
+		
+		// Находим поле "Дата следующей поверки"
+		const nextInspectionInput = findNextInspectionInput();
+		if (!nextInspectionInput) {
+			return false;
+		}
+		
+		// Проверяем, не нужно ли обновлять (если значение уже правильное, не обновляем)
+		const currentNextValue = nextInspectionInput.value || nextInspectionInput.getAttribute('value') || '';
+		if (currentNextValue === nextInspectionDate) {
+			return true;
+		}
+		
+		// Устанавливаем флаг, чтобы избежать бесконечного цикла
+		if (window._updatingNextInspectionDate) {
+			return false;
+		}
+		window._updatingNextInspectionDate = true;
+		
+		try {
+			// Устанавливаем значение
+			const success = await setDateValue(nextInspectionInput, nextInspectionDate);
+			return success;
+		} finally {
+			// Снимаем флаг после небольшой задержки
+			setTimeout(() => {
+				window._updatingNextInspectionDate = false;
+			}, 500);
+		}
+	}
+
+	// ===== Новый блок ДЮП/ГЕП с гарантией одного блока =====
+	const createDyupGepBlock = async () => {
+		// Ищем поле по новому селектору
+		const dateInput = findLastInspectionInput();
+		if (!dateInput) return;
+
+		// Проверяем: если блок уже есть, выходим
+		if (document.querySelector('#dyupgep_block')) return;
+
+		// Получаем текущее значение даты
+		let currentDateValue = dateInput.value || '';
+		
+		// Если поле пустое, пытаемся извлечь из отображаемого текста
+		if (!currentDateValue || currentDateValue.length < 10) {
+			const container = dateInput.closest('._inputContainer_27y0k_15') || 
+			                 dateInput.closest('._dateInput_27y0k_1') ||
+			                 dateInput.parentElement;
+			if (container) {
+				const span = container.querySelector('span');
+				if (span) {
+					const dateMatch = span.textContent.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+					if (dateMatch) {
+						currentDateValue = `${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}`;
+					}
+				}
+			}
+		}
+		
+		// Если все еще пустое, используем текущую дату
+		if (!currentDateValue || currentDateValue.length < 10) {
+			const now = new Date();
+			currentDateValue = now.toISOString().split('T')[0];
+		}
+
+		// Повторная проверка после await, на случай параллельного создания
+		if (document.querySelector('#dyupgep_block')) return;
+
+		// Сохраняем исходную дату
+		if (!dateInput.dataset.dyupOriginalDate) {
+			dateInput.dataset.dyupOriginalDate = currentDateValue;
+		}
+		
+		// При инициализации обновляем поле "Дата следующей поверки", если поле уже имеет значение
+		if (currentDateValue && /^\d{4}-\d{2}-\d{2}$/.test(currentDateValue)) {
+			// Небольшая задержка для гарантии, что все элементы загружены
+			setTimeout(async () => {
+				await updateNextInspectionDate(currentDateValue);
+			}, 500);
+		}
+
+		const block = document.createElement('div');
+		block.id = 'dyupgep_block';
+		block.style.cssText = `
+            margin-top: 6px;
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            font-family: sans-serif;
+            font-size: 13px;
+        `;
+		block.innerHTML = `
+            <label style="font-weight:bold; width:100%;">ДЮП/ГЕП:</label>
+            ${['нет', '2022', '2023', '2024', '2025', '2026', 'Просрочен']
+							.map(
+								(y, i) => `
+                <label style="margin-right:8px; cursor:pointer;">
+                    <input type="radio" name="dyupgep" value="${y}" ${i === 0 ? 'checked' : ''}>
+                    ${y}
+                </label>
+            `
+							)
+							.join('')}
+        `;
+		// Вставляем блок после контейнера поля даты
+		const dateContainer = dateInput.closest('._dateInput_27y0k_1') || 
+		                      dateInput.closest('._inputContainer_27y0k_15') ||
+		                      dateInput.parentElement;
+		if (dateContainer) {
+			dateContainer.insertAdjacentElement('afterend', block);
+		} else {
+			dateInput.parentElement.insertAdjacentElement('afterend', block);
+		}
+		
+		// Инициализируем lastValue для отслеживания переключений
+		const checkedRadio = block.querySelector('input[type="radio"]:checked');
+		if (checkedRadio) {
+			block.dataset.lastValue = checkedRadio.value;
+		}
+
+		// Функция для обработки просроченного случая
+		async function handleExpired() {
+			// Находим селект соответствия по тексту
+			const complianceField = findComplianceField();
+			if (!complianceField) {
+				showToast('⚠️ Поле соответствия не найдено', 2000, '#a33');
+				return;
+			}
+
+			// Сохраняем состояние галки перед изменением результата проверки
+			const sealPlaceCheckbox = document.querySelector('input#seal_place_terminal_cover');
+			if (sealPlaceCheckbox) {
+				block.dataset.sealPlaceWasChecked = sealPlaceCheckbox.checked ? 'true' : 'false';
+			}
+
+			// Проверяем текущее значение (новый селектор)
+			let currentValueEl = complianceField.querySelector('._value_8fpl2_13');
+			if (!currentValueEl) {
+				currentValueEl = complianceField.querySelector('._value_1oihn_13');
+			}
+			if (currentValueEl && currentValueEl.textContent.trim() === 'Не соответствует') {
+				// Уже установлено, просто обновляем текст причины и снимаем галку
+				const reasonTextarea = document.querySelector('textarea#inaccordance_reason');
+				if (reasonTextarea) {
+					await setReactInputValue('textarea#inaccordance_reason', 'Истек срок поверки', 3, true);
+				}
+				// Снимаем галку после обновления причины
+				if (sealPlaceCheckbox && sealPlaceCheckbox.checked) {
+					await setReactCheckboxValue('input#seal_place_terminal_cover', false, 5, true);
+				}
+				return;
+			}
+
+			// Меняем на "Не соответствует"
+			const success = await changeComplianceSelect('Не соответствует');
+			if (!success) {
+				showToast('⚠️ Не удалось изменить соответствие', 2000, '#a33');
+				return;
+			}
+
+			// Ждем появления textarea
+			let reasonTextarea = null;
+			for (let i = 0; i < 20; i++) {
+				await wait(100);
+				reasonTextarea = document.querySelector('textarea#inaccordance_reason');
+				if (reasonTextarea) break;
+			}
+
+			if (reasonTextarea) {
+				await setReactInputValue('textarea#inaccordance_reason', 'Истек срок поверки', 3, true);
+			} else {
+				showToast('⚠️ Поле причины не появилось', 2000, '#a33');
+			}
+
+			// Снимаем галку ПОСЛЕ изменения результата проверки
+			// Используем несколько попыток, так как страница может пытаться восстановить галку
+			if (sealPlaceCheckbox && sealPlaceCheckbox.checked) {
+				// Используем цикл с повторными попытками, так как React может восстанавливать значение
+				for (let attempt = 0; attempt < 5; attempt++) {
+					await wait(200);
+					const checkbox = document.querySelector('input#seal_place_terminal_cover');
+					if (checkbox && checkbox.checked) {
+						await setReactCheckboxValue('input#seal_place_terminal_cover', false, 3, true);
+					} else {
+						// Галка снята, выходим
+						break;
+					}
+				}
+			}
+		}
+
+		// Функция для очистки просроченного случая
+		async function clearExpired() {
+			// Очищаем textarea
+			const reasonTextarea = document.querySelector('textarea#inaccordance_reason');
+			if (reasonTextarea) {
+				const currentText = reasonTextarea.value.trim();
+				// Очищаем только если там наш текст
+				if (currentText === 'Истек срок поверки' || currentText === '') {
+					await setReactInputValue('textarea#inaccordance_reason', '', 3, true);
+				}
+			}
+
+			// Возвращаем селект на "Соответствует"
+			const complianceField = findComplianceField();
+			if (complianceField) {
+				let currentValueEl = complianceField.querySelector('._value_8fpl2_13');
+				if (!currentValueEl) {
+					currentValueEl = complianceField.querySelector('._value_1oihn_13');
+				}
+				if (currentValueEl && currentValueEl.textContent.trim() === 'Не соответствует') {
+					await changeComplianceSelect('Соответствует');
+				}
+			}
+
+			// Возвращаем галку "Пломба на клемной крышке", если она была сохранена
+			if (block.dataset.sealPlaceWasChecked === 'true') {
+				const sealPlaceCheckbox = document.querySelector('input#seal_place_terminal_cover');
+				if (sealPlaceCheckbox && !sealPlaceCheckbox.checked) {
+					await setReactCheckboxValue('input#seal_place_terminal_cover', true, 3, true);
+				}
+				// Очищаем сохраненное состояние
+				delete block.dataset.sealPlaceWasChecked;
+			}
+		}
+
+		block.addEventListener('change', async (e) => {
+			const val = e.target.value;
+			const storedDate = dateInput.dataset.dyupOriginalDate;
+
+			if (val === 'Просрочен') {
+				await handleExpired();
+			} else {
+				// Если переключились с "Просрочен" на другой пункт - очищаем
+				if (block.dataset.lastValue === 'Просрочен') {
+					await clearExpired();
+				} else {
+					// Если переключились на любой другой пункт (не "Просрочен"), возвращаем галку
+					// Это нужно на случай, если пользователь ошибся и выбрал другой пункт
+					if (block.dataset.sealPlaceWasChecked === 'true') {
+						const sealPlaceCheckbox = document.querySelector('input#seal_place_terminal_cover');
+						if (sealPlaceCheckbox && !sealPlaceCheckbox.checked) {
+							await setReactCheckboxValue('input#seal_place_terminal_cover', true, 3, true);
+						}
+						// Очищаем сохраненное состояние
+						delete block.dataset.sealPlaceWasChecked;
+					}
+				}
+
+				if (val === 'нет') {
+					// Возвращаем исходную дату
+					if (storedDate) {
+						const success = await setDateValue(dateInput, storedDate);
+						// Автоматически обновляем поле "Дата следующей поверки"
+						if (success) {
+							await updateNextInspectionDate(storedDate);
+						}
+					}
+				} else {
+					// Получаем текущую дату
+					let currentDateValue = dateInput.value || '';
+					
+					// Если поле пустое, пытаемся извлечь из отображаемого текста
+					if (!currentDateValue || currentDateValue.length < 10) {
+						const container = dateInput.closest('._inputContainer_27y0k_15') || 
+						                 dateInput.closest('._dateInput_27y0k_1') ||
+						                 dateInput.parentElement;
+						if (container) {
+							const span = container.querySelector('span');
+							if (span) {
+								const dateMatch = span.textContent.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+								if (dateMatch) {
+									currentDateValue = `${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}`;
+								}
+							}
+						}
+					}
+					
+					// Если все еще пустое, используем сохраненную дату или текущую
+					if (!currentDateValue || currentDateValue.length < 10) {
+						currentDateValue = storedDate || new Date().toISOString().split('T')[0];
+					}
+					
+					// Извлекаем месяц и день из текущей даты, меняем только год
+					const dateParts = currentDateValue.split('-');
+					if (dateParts.length === 3) {
+						const newDateValue = `${val}-${dateParts[1]}-${dateParts[2]}`;
+						const success = await setDateValue(dateInput, newDateValue);
+						// Автоматически обновляем поле "Дата следующей поверки"
+						if (success) {
+							await updateNextInspectionDate(newDateValue);
+						}
+					} else {
+						// Если формат неожиданный, устанавливаем 1 января указанного года
+						const newDateValue = `${val}-01-01`;
+						const success = await setDateValue(dateInput, newDateValue);
+						// Автоматически обновляем поле "Дата следующей поверки"
+						if (success) {
+							await updateNextInspectionDate(newDateValue);
+						}
+					}
+				}
+			}
+
+			// Сохраняем последнее значение для отслеживания переключений
+			block.dataset.lastValue = val;
+		});
+
+		// Добавляем обработчик изменений для поля даты (для автоматического обновления следующей даты)
+		// Используем MutationObserver для отслеживания изменений value и атрибута value
+		let lastObservedValue = dateInput.value || dateInput.getAttribute('value') || '';
+		
+		const dateObserver = new MutationObserver(async (mutations) => {
+			// Проверяем изменения в value атрибуте
+			for (const mutation of mutations) {
+				if (mutation.type === 'attributes' && mutation.attributeName === 'value') {
+					const currentValue = dateInput.value || dateInput.getAttribute('value') || '';
+					if (currentValue && currentValue !== lastObservedValue && /^\d{4}-\d{2}-\d{2}$/.test(currentValue)) {
+						lastObservedValue = currentValue;
+						// Обновляем поле "Дата следующей поверки"
+						await updateNextInspectionDate(currentValue);
+					}
+				}
+			}
+			
+			// Также проверяем изменения в span (отображаемый текст)
+			const container = dateInput.closest('._inputContainer_27y0k_15') || dateInput.parentElement;
+			if (container) {
+				const span = container.querySelector('span');
+				if (span) {
+					const spanText = span.textContent.trim();
+					const dateMatch = spanText.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+					if (dateMatch) {
+						const currentValue = `${dateMatch[3]}-${dateMatch[2]}-${dateMatch[1]}`;
+						if (currentValue !== lastObservedValue && /^\d{4}-\d{2}-\d{2}$/.test(currentValue)) {
+							// Проверяем, что значение в input тоже изменилось
+							const inputValue = dateInput.value || dateInput.getAttribute('value') || '';
+							if (inputValue === currentValue || !inputValue) {
+								lastObservedValue = currentValue;
+								// Обновляем поле "Дата следующей поверки"
+								await updateNextInspectionDate(currentValue);
+							}
+						}
+					}
+				}
+			}
+		});
+		
+		// Начинаем наблюдение за изменениями
+		dateObserver.observe(dateInput, {
+			attributes: true,
+			attributeFilter: ['value'],
+			childList: false,
+			subtree: false
+		});
+		
+		// Также наблюдаем за контейнером (для отслеживания изменений в span)
+		const dateObserverContainer = dateInput.closest('._inputContainer_27y0k_15') || 
+		                              dateInput.closest('._dateInput_27y0k_1') ||
+		                              dateInput.parentElement;
+		if (dateObserverContainer) {
+			dateObserver.observe(dateObserverContainer, {
+				attributes: false,
+				childList: true,
+				subtree: true,
+				characterData: true
+			});
+		}
+		
+		// Также добавляем обработчик событий input и change для надежности
+		const handleDateChange = async (e) => {
+			// Пропускаем программные события (от нашего скрипта)
+			if (e && (e._programmatic || e.isTrusted === false)) {
+				return;
+			}
+			
+			const currentValue = dateInput.value || dateInput.getAttribute('value') || '';
+			if (currentValue && currentValue !== lastObservedValue && /^\d{4}-\d{2}-\d{2}$/.test(currentValue)) {
+				lastObservedValue = currentValue;
+				// Небольшая задержка для стабилизации значения
+				await wait(100);
+				// Обновляем поле "Дата следующей поверки"
+				await updateNextInspectionDate(currentValue);
+			}
+		};
+		
+		dateInput.addEventListener('input', handleDateChange);
+		dateInput.addEventListener('change', handleDateChange);
+		
+		// Сохраняем observer и обработчики для возможной очистки
+		dateInput._dateObserver = dateObserver;
+		dateInput._dateChangeHandler = handleDateChange;
+	};
+
+	// ===== Блок антимагнитной пломбы =====
+	const createAntimagneticBlock = async () => {
+		const antimagneticInput = document.querySelector('input#seal_number_antimagnetic');
+		if (!antimagneticInput) return;
+
+		// Проверяем: если блок уже есть, выходим
+		if (document.querySelector('#antimagnetic_block')) return;
+
+		// Повторная проверка после await, на случай параллельного создания
+		if (document.querySelector('#antimagnetic_block')) return;
+
+		// Создаем datalist для автозаполнения
+		let datalist = document.getElementById('antimagnetic_datalist');
+		if (!datalist) {
+			datalist = document.createElement('datalist');
+			datalist.id = 'antimagnetic_datalist';
+			document.body.appendChild(datalist);
+		}
+		
+		// Обновляем опции datalist
+		datalist.innerHTML = antimagneticTemplates.map(t => `<option value="${t}">`).join('');
+		
+		// Привязываем datalist к input
+		if (!antimagneticInput.hasAttribute('list')) {
+			antimagneticInput.setAttribute('list', 'antimagnetic_datalist');
+		}
+
+		// Создаем блок с кнопками быстрого выбора
+		const block = document.createElement('div');
+		block.id = 'antimagnetic_block';
+		block.style.cssText = `
+			margin-top: 6px;
+			display: flex;
+			align-items: center;
+			flex-wrap: wrap;
+			gap: 6px;
+			font-family: sans-serif;
+			font-size: 12px;
+		`;
+		
+		const buttonsHtml = antimagneticTemplates.map(t => `
+			<button class="antimagnetic-template-btn" data-value="${t}" 
+				style="padding:4px 8px; background:#f0f0f0; border:1px solid #ccc; border-radius:4px; cursor:pointer; font-size:11px; white-space:nowrap;">
+				${t}
+			</button>
+		`).join('');
+		
+		block.innerHTML = `
+			<label style="font-weight:bold; width:100%; font-size:12px;">Быстрый выбор:</label>
+			${buttonsHtml || '<span style="color:#999; font-size:11px;">Нет шаблонов. Добавьте их в настройках.</span>'}
+		`;
+		
+		// Вставляем блок после контейнера input
+		const inputContainer = antimagneticInput.closest('._inputContainer_1rtfy_8') || antimagneticInput.parentElement;
+		inputContainer.insertAdjacentElement('afterend', block);
+
+		// Обработчики кликов по кнопкам
+		block.querySelectorAll('.antimagnetic-template-btn').forEach(btn => {
+			btn.addEventListener('click', async (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				e.stopImmediatePropagation();
+				const value = btn.dataset.value;
+				// Используем silent режим, чтобы не триггерить обработчики сайта
+				await setReactInputValue('input#seal_number_antimagnetic', value, 3, true);
+			});
+		});
+	};
+	
+	function updateAntimagneticBlock() {
+		// Обновляем datalist (глобально для всех полей)
+		let datalist = document.getElementById('antimagnetic_datalist');
+		if (!datalist) {
+			datalist = document.createElement('datalist');
+			datalist.id = 'antimagnetic_datalist';
+			document.body.appendChild(datalist);
+		}
+		datalist.innerHTML = antimagneticTemplates.map(t => `<option value="${t}">`).join('');
+		
+		// Привязываем datalist ко всем существующим полям
+		document.querySelectorAll('input#seal_number_antimagnetic').forEach(input => {
+			if (!input.hasAttribute('list')) {
+				input.setAttribute('list', 'antimagnetic_datalist');
+			}
+		});
+		
+		// Обновляем блок с кнопками, если он существует
+		const block = document.querySelector('#antimagnetic_block');
+		if (!block) return;
+		
+		// Обновляем кнопки
+		const buttonsHtml = antimagneticTemplates.map(t => `
+			<button class="antimagnetic-template-btn" data-value="${t}" 
+				style="padding:4px 8px; background:#f0f0f0; border:1px solid #ccc; border-radius:4px; cursor:pointer; font-size:11px; white-space:nowrap;">
+				${t}
+			</button>
+		`).join('');
+		
+		block.innerHTML = `
+			<label style="font-weight:bold; width:100%; font-size:12px;">Быстрый выбор:</label>
+			${buttonsHtml || '<span style="color:#999; font-size:11px;">Нет шаблонов. Добавьте их в настройках.</span>'}
+		`;
+		
+		// Перепривязываем обработчики
+		block.querySelectorAll('.antimagnetic-template-btn').forEach(btn => {
+			btn.addEventListener('click', async (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				e.stopImmediatePropagation();
+				const value = btn.dataset.value;
+				// Используем silent режим, чтобы не триггерить обработчики сайта
+				await setReactInputValue('input#seal_number_antimagnetic', value, 3, true);
+			});
+		});
+	}
+
+	// Инициализация datalist при загрузке
+	(function initAntimagneticDatalist() {
+		let datalist = document.getElementById('antimagnetic_datalist');
+		if (!datalist) {
+			datalist = document.createElement('datalist');
+			datalist.id = 'antimagnetic_datalist';
+			document.body.appendChild(datalist);
+		}
+		datalist.innerHTML = antimagneticTemplates.map(t => `<option value="${t}">`).join('');
+	})();
+
+	// ===== Функция заполнения шаблоном номера пломбы =====
+	async function fillSealNumberTemplate() {
+		// Проверяем, что шаблон задан
+		if (!sealNumberTemplate || sealNumberTemplate.trim() === '') {
+			return;
+		}
+
+		// Проверяем, что нет активного workflow (нет сохраненного номера для следующей записи)
+		const workflowNextSeal = localStorage.getItem('workflow_next_seal');
+		if (workflowNextSeal) {
+			// Workflow активен, не заполняем шаблоном
+			return;
+		}
+
+		// Проверяем флаг активного workflow
+		if (window._workflowActive) {
+			return;
+		}
+
+		// Ищем поле номера пломбы
+		const sealInput = document.querySelector('input#seal_number_terminal_cover');
+		if (!sealInput) {
+			return;
+		}
+
+		// Проверяем, что поле видимо
+		if (sealInput.offsetParent === null) {
+			return;
+		}
+
+		// Проверяем, что поле пустое
+		const currentValue = sealInput.value.trim();
+		if (currentValue !== '') {
+			// Поле уже заполнено, не перезаписываем
+			return;
+		}
+
+		// Заполняем поле шаблоном (используем silent режим, чтобы не триггерить другие обработчики)
+		const success = await setReactInputValue('input#seal_number_terminal_cover', sealNumberTemplate, 3, true);
+		
+		// Если успешно заполнили, сохраняем значение в data-атрибут для отслеживания
+		if (success) {
+			sealInput.dataset.templateValue = sealNumberTemplate;
+		}
+	}
+
+	// Функция для отслеживания изменений в поле номера пломбы пользователем
+	function setupSealInputWatcher() {
+		const sealInput = document.querySelector('input#seal_number_terminal_cover');
+		if (!sealInput || sealInput.dataset.watcherSetup) {
+			return;
+		}
+
+		// Помечаем, что watcher уже установлен
+		sealInput.dataset.watcherSetup = 'true';
+
+		// Сохраняем последнее известное значение для отслеживания изменений
+		let lastKnownValue = sealInput.value || '';
+
+		// Отслеживаем изменения значения пользователем
+		sealInput.addEventListener('input', (e) => {
+			const currentValue = sealInput.value || '';
+			
+			// Если пользователь вручную изменил значение (не программное событие)
+			if (e.isTrusted && !e._programmatic) {
+				// Если значение изменилось (не просто фокус/блур)
+				if (currentValue !== lastKnownValue) {
+					// Пользователь вручную изменил значение - сбрасываем флаги
+					delete sealInput.dataset.templateFilled;
+					delete sealInput.dataset.templateValue;
+				}
+			}
+			
+			lastKnownValue = currentValue;
+		});
+
+		// Также отслеживаем изменения через MutationObserver для случаев, когда значение меняется программно
+		const valueObserver = new MutationObserver(() => {
+			const currentValue = sealInput.value || '';
+			// Если значение изменилось и не соответствует шаблону, значит это не наш шаблон
+			if (currentValue !== lastKnownValue && currentValue !== sealInput.dataset.templateValue) {
+				// Значение изменилось не из-за нашего шаблона - сбрасываем флаги
+				delete sealInput.dataset.templateFilled;
+				delete sealInput.dataset.templateValue;
+			}
+			lastKnownValue = currentValue;
+		});
+
+		// Наблюдаем за изменениями атрибута value
+		valueObserver.observe(sealInput, {
+			attributes: true,
+			attributeFilter: ['value'],
+			childList: false,
+			subtree: false
+		});
+	}
+
+	// ===== Наблюдатель =====
+	const observer = new MutationObserver(() => {
+		// Ищем поле даты по новому селектору
+		const dateInput = findLastInspectionInput();
+		if (dateInput) createDyupGepBlock();
+		
+		const antimagneticInput = document.querySelector('input#seal_number_antimagnetic');
+		if (antimagneticInput) {
+			// Привязываем datalist к новому полю
+			if (!antimagneticInput.hasAttribute('list')) {
+				antimagneticInput.setAttribute('list', 'antimagnetic_datalist');
+			}
+			createAntimagneticBlock();
+		}
+
+		// Проверяем поле номера пломбы для заполнения шаблоном
+		const sealInput = document.querySelector('input#seal_number_terminal_cover');
+		if (sealInput) {
+			// Устанавливаем watcher для отслеживания изменений пользователем
+			setupSealInputWatcher();
+			
+			// Проверяем текущее значение поля
+			const currentValue = sealInput.value.trim();
+			
+			// Если поле пустое и мы еще не заполняли его шаблоном для этого значения
+			if (currentValue === '' && !sealInput.dataset.templateFilled) {
+				// Помечаем, что мы обработали это поле
+				sealInput.dataset.templateFilled = 'true';
+				// Заполняем шаблоном с небольшой задержкой
+				setTimeout(() => {
+					fillSealNumberTemplate();
+				}, 300);
+			} else if (currentValue !== '' && currentValue !== sealInput.dataset.templateValue) {
+				// Поле заполнено другим значением (не нашим шаблоном) - сбрасываем флаг
+				// чтобы при следующем появлении пустого поля можно было заполнить шаблоном
+				delete sealInput.dataset.templateFilled;
+			}
+		}
+	});
+	observer.observe(document.body, { childList: true, subtree: true });
+
+	// Проверяем наличие поля при загрузке
+	if (findLastInspectionInput()) {
+		createDyupGepBlock();
+	}
+	
+	if (document.querySelector('input#seal_number_antimagnetic')) {
+		const antimagneticInput = document.querySelector('input#seal_number_antimagnetic');
+		if (antimagneticInput && !antimagneticInput.hasAttribute('list')) {
+			antimagneticInput.setAttribute('list', 'antimagnetic_datalist');
+		}
+		createAntimagneticBlock();
+	}
+
+	// Проверяем поле номера пломбы при загрузке для заполнения шаблоном
+	const initialSealInput = document.querySelector('input#seal_number_terminal_cover');
+	if (initialSealInput) {
+		setupSealInputWatcher();
+		if (!initialSealInput.dataset.templateFilled) {
+			initialSealInput.dataset.templateFilled = 'true';
+			setTimeout(() => {
+				fillSealNumberTemplate();
+			}, 500);
+		}
+	}
+
+	// ===== Workflow =====
+	async function runWorkflow() {
+		try {
+			// Устанавливаем флаг активного workflow, чтобы не заполнять шаблоном
+			window._workflowActive = true;
+
+			// 1. Проверка поля пломбы
+			const sealInput = document.querySelector('input#seal_number_terminal_cover');
+			let savedSeal = null;
+			
+			if (sealInput && sealInput.value.trim()) {
+				// Поле существует и имеет значение - запоминаем и инкрементируем
+				try {
+					const currentValue = sealInput.value.trim();
+					savedSeal = incrementSeal(currentValue);
+					// Сохраняем новый номер в localStorage для следующего акта
+					localStorage.setItem('workflow_next_seal', savedSeal);
+				} catch (err) {
+					// Если не удалось инкрементировать, продолжаем без вставки номера
+					console.warn('⚠️ Не удалось вычислить новый номер пломбы:', err);
+					localStorage.removeItem('workflow_next_seal');
+				}
+			} else {
+				// Поле пустое или отсутствует - не будем вставлять номер в следующем акте
+				localStorage.removeItem('workflow_next_seal');
+			}
+			
+			// 2. Нажатие "Продолжить"
+			await clickButtonByText('Продолжить', [
+				'button._button_alwez_1._wide_alwez_180[type="submit"]',
+				'button._wide_alwez_180[type="submit"]'
+			]);
+
+			// 3. Установка чекбокса (в зависимости от place)
+			const checkboxSelector =
+				place === 1 ? 'input#owner_is_absent' : 'input#refusal_of_sign';
+			const checkboxEl = await waitForSelector(checkboxSelector);
+			// Проверяем, если чекбокс уже установлен, не нажимаем повторно
+			if (!checkboxEl.checked) {
+				checkboxEl.click();
+				await wait(100);
+			}
+			
+			// 4. Нажатие "Сохранить сверку"
+			await clickButtonByText('Сохранить сверку', [
+				'button._button_alwez_1._wide_alwez_180[type="submit"]',
+				'button._wide_alwez_180[type="submit"]'
+			]);
+			
+			// 5. Переход к следующей/предыдущей записи (в зависимости от SledORPred)
+			// Ждем появления кнопок навигации
+			await wait(300);
+			
+			if (SledORPred === 1) {
+				// Следующее
+				await clickButtonByText('Следующее', [
+					'button._button_alwez_1._icon_alwez_37._right_alwez_209[type="button"]',
+					'button._right_alwez_209[type="button"]'
+				]);
+			} else {
+				// Предыдущее
+				await clickButtonByText('Предыдущее', [
+					'button._button_alwez_1._icon_alwez_37._left_alwez_43[type="button"]',
+					'button._left_alwez_43[type="button"]'
+				]);
+			}
+
+			// 6. Заполнение полей
+			// Проверяем, нужно ли вставлять номер пломбы (из предыдущего акта)
+			const sealToInsert = localStorage.getItem('workflow_next_seal');
+			if (sealToInsert) {
+				// Проверяем, существует ли поле перед попыткой вставки
+				const sealInputField = await waitForSelector('input#seal_number_terminal_cover', 5000);
+				if (sealInputField) {
+					// Сбрасываем флаг templateFilled, чтобы можно было заполнить инкрементированным значением
+					delete sealInputField.dataset.templateFilled;
+					const success = await setReactInputValue('input#seal_number_terminal_cover', sealToInsert, 3, false);
+					if (!success) {
+						showToast('⚠️ Не удалось установить номер пломбы', 2000, '#a33');
+					}
+					// Удаляем сохраненный номер после использования
+					localStorage.removeItem('workflow_next_seal');
+					
+					// 7. Показ toast-уведомлений о результате
+					if (success) {
+						showToast('✅ Автозаполнение завершено', 2000, '#2a7');
+					} else {
+						showToast('⚠️ Автозаполнение завершено с ошибками', 2000, '#a33');
+					}
+				} else {
+					// Поле отсутствует - просто удаляем сохраненный номер
+					localStorage.removeItem('workflow_next_seal');
+					showToast('✅ Автозаполнение завершено (поле пломбы не найдено)', 2000, '#2a7');
+				}
+			} else {
+				// Номер не был сохранен (поле было пустым в предыдущем акте)
+				showToast('✅ Автозаполнение завершено (номер пломбы не был указан)', 2000, '#2a7');
+			}
+		} catch (err) {
+			showToast(`❌ Ошибка: ${err.message}`, 4000, '#a33');
+			console.error('❌ Ошибка workflow:', err);
+			throw err;
+		} finally {
+			// Снимаем флаг активного workflow после небольшой задержки
+			setTimeout(() => {
+				window._workflowActive = false;
+			}, 1000);
+		}
+	}
+
+	document.addEventListener('keydown', (e) => {
+		// Проверяем блокировку workflow
+		if (window._blockWorkflow) return;
+		
+		const tag = e.target.tagName.toLowerCase();
+		if (tag === 'input' || tag === 'textarea' || e.target.isContentEditable)
+			return;
+		if (e.key === hotkey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+			e.preventDefault();
+			runWorkflow().catch((err) => {
+				// Ошибка уже обработана в runWorkflow с toast
+				console.error('❌ Ошибка workflow:', err);
+			});
+		}
+	});
+})();
